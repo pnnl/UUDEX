@@ -35,6 +35,26 @@ DB_NAME="${DB_NAME:-uudex}"
 DB_USER="${DB_USER:-uudex_user}"
 DB_PASSWORD="${DB_PASSWORD:-}"
 
+# Keys go in this folder, so refuse one that others can write or that another
+# user owns: an existing ca.key there would be reused and a planted symlink
+# would be followed.
+prepare_certs_dir() {
+    (umask 077 && mkdir -p "$CERTS_DIR") || {
+        echo "Error: cannot create output folder $CERTS_DIR" >&2
+        exit 1
+    }
+    if [ ! -d "$CERTS_DIR" ] || [ ! -O "$CERTS_DIR" ]; then
+        echo "Error: output folder $CERTS_DIR must be a directory owned by you" >&2
+        exit 1
+    fi
+    local mode
+    mode=$(ls -ldL "$CERTS_DIR")
+    if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
+        echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
+        exit 1
+    fi
+}
+
 # Function to display help
 show_help() {
     echo "Usage: $0 [OPTIONS]"
@@ -298,9 +318,6 @@ generate_ca_if_needed() {
             return
         fi
 
-        # Create certs directory
-        mkdir -p "$CERTS_DIR"
-
         # Generate CA private key
         openssl genrsa -out "$CERTS_DIR/ca.key" "$KEY_SIZE"
 
@@ -399,6 +416,10 @@ main() {
 
     # Test database connection
     test_db_connection
+
+    if [ "$DRY_RUN" != true ]; then
+        prepare_certs_dir
+    fi
 
     # Generate CA if needed
     generate_ca_if_needed

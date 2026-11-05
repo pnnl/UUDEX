@@ -26,6 +26,26 @@ resolve_certs_dir() {
     fi
 }
 
+# Keys go in this folder, so refuse one that others can write or that another
+# user owns: an existing ca.key there would be reused and a planted symlink
+# would be followed.
+prepare_certs_dir() {
+    (umask 077 && mkdir -p "$CERTS_DIR") || {
+        echo "Error: cannot create output folder $CERTS_DIR" >&2
+        exit 1
+    }
+    if [ ! -d "$CERTS_DIR" ] || [ ! -O "$CERTS_DIR" ]; then
+        echo "Error: output folder $CERTS_DIR must be a directory owned by you" >&2
+        exit 1
+    fi
+    local mode
+    mode=$(ls -ldL "$CERTS_DIR")
+    if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
+        echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
+        exit 1
+    fi
+}
+
 # Function to display help
 show_help() {
     echo "Usage: $0 [CLIENT_NAME] [ORG] [OPTIONS]"
@@ -57,7 +77,6 @@ show_help() {
     echo "  $0 bob \"Acme Corp\"              # Generate certificate for 'bob' at 'Acme Corp'"
     echo "  $0 alice \"Acme\" --days 730      # Generate 2-year certificate for 'alice'"
     echo "  $0 bob \"Corp\" -c CA -s Ontario  # Generate certificate with Canadian details"
-    echo "  UUDEX_CERTS=/tmp/certs $0 alice  # Output certificates to /tmp/certs"
     echo "  $0 alice --output-dir /custom/path # Output certificates to /custom/path"
     echo "  $0 --list                       # List existing certificates"
     echo ""
@@ -223,8 +242,7 @@ else
     fi
 fi
 
-# Create certs directory
-mkdir -p "$CERTS_DIR"
+prepare_certs_dir
 
 # Generate CA only if it doesn't exist
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
