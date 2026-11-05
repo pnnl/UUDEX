@@ -1,5 +1,5 @@
 # Build and runtime both use the pinned tag; the digest makes a rebuild reproducible.
-ARG PYTHON_IMAGE=python:3.13.15-slim-bookworm@sha256:2325bb286ec344af3e5898cc224b5844e2707ac6e26b1632516fd3edc84a5e26
+ARG PYTHON_IMAGE=python:3.13.15-alpine3.24@sha256:79e7a9b9ff1cbceff819f856fb374477792a5967759d94df266de7b7b4120e6f
 
 FROM ${PYTHON_IMAGE} AS builder
 ENV PIP_NO_CACHE_DIR=1 \
@@ -17,8 +17,8 @@ ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     UUDEX_SECRETS_DIR=/run/secrets
-RUN groupadd --system --gid 10001 uudex \
-    && useradd --system --uid 10001 --gid uudex --no-create-home --shell /usr/sbin/nologin uudex
+RUN addgroup -S -g 10001 uudex \
+    && adduser -S -u 10001 -G uudex -H -s /sbin/nologin uudex
 COPY --from=builder /opt/venv /opt/venv
 USER 10001:10001
 EXPOSE 8000
