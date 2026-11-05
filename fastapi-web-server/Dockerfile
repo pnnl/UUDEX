@@ -21,6 +21,9 @@ RUN addgroup -S -g 10001 uudex \
     && adduser -S -u 10001 -G uudex -H -s /sbin/nologin uudex
 COPY --from=builder /opt/venv /opt/venv
 USER 10001:10001
+# Never publish port 8000: the app trusts the client-certificate header, so only the
+# verifying proxy may reach it, over an internal network (see the README warning).
 EXPOSE 8000
 # Secrets are files under /run/secrets (UUDEX_SECRETS_DIR); nothing secret is passed here.
+# They must be readable by uid 10001 (owner 10001, mode 0400), or startup fails.
 CMD ["uvicorn", "uudex_server.main:app", "--host", "0.0.0.0", "--port", "8000"]
