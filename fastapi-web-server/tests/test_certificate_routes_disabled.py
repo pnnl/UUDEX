@@ -34,7 +34,6 @@ def test_openapi_lists_no_certificate_paths():
     assert [p for p in app.openapi()["paths"] if "certificates" in p] == []
 
 
-def test_endpoint_routes_still_registered():
-    # Newer FastAPI wraps included routers lazily, so app.routes no longer lists their paths.
-    paths = set(app.openapi()["paths"])
-    assert {"/endpoint/", "/endpoint/me", "/endpoint/{endpoint_id}"} <= paths
+@pytest.mark.parametrize("path", ["/endpoint/", "/endpoint/me", "/endpoint/1"])
+def test_endpoint_routes_still_resolve(path):
+    assert resolves(app, "GET", path) is True
