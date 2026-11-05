@@ -1,18 +1,17 @@
-.env
-.env.*
-.env-*
-secrets/
-**/secrets/
-.git
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-tests/
-infrastructure/
-*.db
-Dockerfile
-.dockerignore
+# Allowlist: only what the build needs enters the context.
+*
+!pyproject.toml
+!README.md
+!src/
+
+# Re-exclude sensitive or generated files at any depth inside src/.
+**/.env
+**/.env.*
+**/.env-*
+**/secrets
+**/*.key
+**/*.pem
+**/*.p12
+**/__pycache__
+**/*.py[cod]
+**/*.db
