@@ -13,3 +13,5 @@
 # Denote all files that are truly binary and should not be modified.
 *.png binary
 *.jpg binary
+# Kept byte-for-byte: key material, no line-ending conversion.
+example_ssl_certs/** -text
