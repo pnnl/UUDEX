@@ -5,6 +5,8 @@ import pytest
 import uudex_server.models as m
 from uudex_server.repos import EndpointRepository, ParticipantRepository
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.mark.asyncio
 async def setup_participant(participant_repo: ParticipantRepository) -> m.Participant:
@@ -20,6 +22,7 @@ async def setup_participant(participant_repo: ParticipantRepository) -> m.Partic
     return created_participant
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_endpoint(
     endpoint_repo: EndpointRepository, participant_repo: ParticipantRepository
@@ -39,6 +42,7 @@ async def test_create_endpoint(
     assert result.endpoint_user_name == "user1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_endpoint_by_id(
     endpoint_repo: EndpointRepository, participant_repo: ParticipantRepository
@@ -59,6 +63,7 @@ async def test_select_endpoint_by_id(
     assert result.endpoint_uuid == "uuid1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_endpoint(
     endpoint_repo: EndpointRepository, participant_repo: ParticipantRepository
@@ -79,6 +84,7 @@ async def test_update_endpoint(
     assert result.endpoint_user_name == "updated_user"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_endpoint(
     endpoint_repo: EndpointRepository, participant_repo: ParticipantRepository

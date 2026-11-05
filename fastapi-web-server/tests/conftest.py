@@ -8,7 +8,8 @@ from httpx import AsyncClient
 
 from uudex_server.core.settings import Settings, get_settings
 from uudex_server.main import app
-from uudex_server.services.database_service import init_db, shutdown_db
+from uudex_server.repos import DatasetDefinitionRepository
+from uudex_server.services.database_service import get_db_session, init_db, shutdown_db
 
 
 @pytest_asyncio.fixture(scope="session")
@@ -49,6 +50,13 @@ async def cleanup_after_test():
     """Reset database to known state after each test"""
     yield  # Test runs here
     await init_db()  # Recreate tables after each test
+
+
+@pytest_asyncio.fixture
+async def dataset_definition_repo(setup_test_env) -> AsyncGenerator[DatasetDefinitionRepository, None]:
+    """Repository bound to a session on the test database"""
+    async with get_db_session() as session:
+        yield DatasetDefinitionRepository(session)
 
 
 # Certificate fixtures

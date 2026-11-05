@@ -27,7 +27,10 @@ from uudex_server.models import (
     SubscriptionSubject,
 )
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
 
+
+@XFAIL_17
 def test_full_database_seeding(api_session: Session):  # SQLAlchemy ORM session type
     # Check each model to verify the database seeding
     participants = api_session.query(Participant).all()

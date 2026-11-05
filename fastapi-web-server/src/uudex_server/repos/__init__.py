@@ -80,3 +80,15 @@ class Repository(Generic[T]):
 
 
 # Importing repository modules with standardized function names
+# Imported last: each module imports Repository from this package.
+from .attached_data_type_repository import AttachedDataTypeRepository  # noqa: E402
+from .data_type_repository import DataTypeRepository  # noqa: E402
+from .dataset_definition_repository import DatasetDefinitionRepository  # noqa: E402
+from .dataset_repositories import DatasetRepository  # noqa: E402
+from .endpoint_repository import EndpointRepository  # noqa: E402
+from .participant_repositories import ParticipantRepository  # noqa: E402
+from .subscription_and_subject_repositories import (  # noqa: E402
+    SubjectRepository,
+    SubscriptionRepository,
+    SubscriptionSubjectRepository,
+)

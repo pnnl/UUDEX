@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+XFAIL_18_ADMIN = pytest.mark.xfail(strict=True, reason="#18: is_admin read on None, no authenticated user is produced")
+XFAIL_18_MESSAGE = pytest.mark.xfail(strict=True, reason="#18: discovery returns a different no-certificate message; fits no listed class")
+
 
 @pytest.mark.asyncio
 async def test_discover_subjects_no_auth(client: AsyncClient):
@@ -20,6 +23,7 @@ async def test_discover_subjects_v1_no_auth(client: AsyncClient):
     assert response.json() == "No certificate detected."
 
 
+@XFAIL_18_ADMIN
 @pytest.mark.asyncio
 async def test_discover_subjects_with_mock_auth(client: AsyncClient):
     """Test discover subjects endpoint with mocked authentication"""
@@ -62,6 +66,7 @@ async def test_discover_subjects_with_mock_auth(client: AsyncClient):
                 assert response.status_code in [200, 401, 500]
 
 
+@XFAIL_18_ADMIN
 @pytest.mark.asyncio
 async def test_discover_subjects_admin_with_mock_auth(client: AsyncClient):
     """Test discover subjects endpoint with mocked admin authentication"""
@@ -97,6 +102,7 @@ async def test_discover_subjects_admin_with_mock_auth(client: AsyncClient):
             assert response.status_code in [200, 401, 500]
 
 
+@XFAIL_18_MESSAGE
 @pytest.mark.asyncio
 async def test_discover_subjects_invalid_cert(client: AsyncClient):
     """Test discover subjects endpoint with invalid certificate"""

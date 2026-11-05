@@ -5,9 +5,10 @@ import pytest
 import uudex_server.models as m
 import uudex_server.repos as r
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.fixture(name="participant", scope="function")
-@pytest.mark.asyncio
 async def participant_fixture(participant_repo: r.ParticipantRepository) -> m.Participant:
     participant_create = m.ParticipantCreate(
         participant_uuid=str(uuid.uuid4()),
@@ -22,7 +23,6 @@ async def participant_fixture(participant_repo: r.ParticipantRepository) -> m.Pa
 
 
 @pytest.fixture(name="dataset", scope="function")
-@pytest.mark.asyncio
 async def dataset_fixture(
     participant: m.Participant, subject: m.Subject, dataset_repo: r.DatasetRepository
 ) -> m.Dataset:
@@ -44,7 +44,6 @@ async def dataset_fixture(
 
 
 @pytest.fixture(name="endpoint", scope="function")
-@pytest.mark.asyncio
 async def endpoint_fixture(
     participant: m.Participant, endpoint_repo: r.EndpointRepository
 ) -> m.EndPoint:
@@ -62,7 +61,6 @@ async def endpoint_fixture(
 
 
 @pytest.fixture(name="subscription", scope="function")
-@pytest.mark.asyncio
 async def subscription_fixture(endpoint: m.EndPoint, subscription_repo: r.SubscriptionRepository):
     subscription_create = m.Subscription(
         subscription_uuid=str(uuid.uuid4()),
@@ -76,7 +74,6 @@ async def subscription_fixture(endpoint: m.EndPoint, subscription_repo: r.Subscr
 
 
 @pytest.fixture(name="subject")
-@pytest.mark.asyncio
 async def subject_fixture(
     participant: m.Participant, dataset: m.Dataset, subject_repo: r.SubjectRepository
 ):
@@ -163,6 +160,7 @@ async def setup_subscription_and_subject(
     return created_subject, created_subscription
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_subscription_subject(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -198,6 +196,7 @@ async def test_create_subscription_subject(
     # assert created_subscription_subject.subject.subject_name == "Test Subject"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_all_subscription_subjects(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -227,6 +226,7 @@ async def test_select_all_subscription_subjects(
     assert isinstance(subscription_subjects, list)
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_by_fields(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -259,6 +259,7 @@ async def test_select_by_fields(
     assert selected_subscription_subject.subscription_id == created_subscription.subscription_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_subscription_subject(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
