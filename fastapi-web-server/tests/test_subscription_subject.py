@@ -7,7 +7,6 @@ import uudex_server.repos as r
 
 
 @pytest.fixture(name="participant", scope="function")
-@pytest.mark.asyncio
 async def participant_fixture(participant_repo: r.ParticipantRepository) -> m.Participant:
     participant_create = m.ParticipantCreate(
         participant_uuid=str(uuid.uuid4()),
@@ -22,7 +21,6 @@ async def participant_fixture(participant_repo: r.ParticipantRepository) -> m.Pa
 
 
 @pytest.fixture(name="dataset", scope="function")
-@pytest.mark.asyncio
 async def dataset_fixture(
     participant: m.Participant, subject: m.Subject, dataset_repo: r.DatasetRepository
 ) -> m.Dataset:
@@ -44,7 +42,6 @@ async def dataset_fixture(
 
 
 @pytest.fixture(name="endpoint", scope="function")
-@pytest.mark.asyncio
 async def endpoint_fixture(
     participant: m.Participant, endpoint_repo: r.EndpointRepository
 ) -> m.EndPoint:
@@ -62,7 +59,6 @@ async def endpoint_fixture(
 
 
 @pytest.fixture(name="subscription", scope="function")
-@pytest.mark.asyncio
 async def subscription_fixture(endpoint: m.EndPoint, subscription_repo: r.SubscriptionRepository):
     subscription_create = m.Subscription(
         subscription_uuid=str(uuid.uuid4()),
@@ -76,7 +72,6 @@ async def subscription_fixture(endpoint: m.EndPoint, subscription_repo: r.Subscr
 
 
 @pytest.fixture(name="subject")
-@pytest.mark.asyncio
 async def subject_fixture(
     participant: m.Participant, dataset: m.Dataset, subject_repo: r.SubjectRepository
 ):

@@ -23,7 +23,6 @@ from uudex_server.models import (
 from uudex_server.models.common_types import YNSwitch
 from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.models.endpoint_models import EndPoint
-from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
 
 client = TestClient(app)
 
@@ -101,21 +100,29 @@ class TestUtilityFunctions:
     
     def test_extract_cn_from_dn_simple(self):
         """Test CN extraction from simple DN"""
+        from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
+
         result = extract_cn_from_dn("CN=alice")
         assert result == "alice"
     
     def test_extract_cn_from_dn_complex(self):
         """Test CN extraction from complex DN"""
+        from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
+
         result = extract_cn_from_dn("/CN=bob/O=Organization/C=US")
         assert result == "bob"
     
     def test_extract_cn_from_dn_with_commas(self):
         """Test CN extraction from DN with commas"""
+        from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
+
         result = extract_cn_from_dn("CN=charlie,O=Org,C=US")
         assert result == "charlie"
     
     def test_extract_cn_from_dn_no_cn(self):
         """Test CN extraction when no CN is present"""
+        from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
+
         result = extract_cn_from_dn("O=Organization")
         assert result == "O=Organization"
 
