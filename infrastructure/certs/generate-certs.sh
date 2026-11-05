@@ -9,7 +9,7 @@ DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="~/.config/uudex/tls"
+DEFAULT_CERTS_DIR='~/.config/uudex/tls'
 
 # Output directory: -o, then UUDEX_CERTS, then ~/.config/uudex/tls. Keys must
 # never land in a working tree, so there is no relative default. An empty value
