@@ -13,7 +13,7 @@ docker-compose up -d
 
 ## Certificates
 
-The certificate scripts live in `infrastructure/certs/` at the repository root, not in this directory. Run them from the directory where you want the `certs/` output to be written, for example:
+The certificate scripts live in `infrastructure/certs/` at the repository root, not in this directory. By default they write to `~/.config/uudex/tls`, not into the repository. For example:
 
 ```bash
 ./infrastructure/certs/generate-certs.sh --list
@@ -21,7 +21,7 @@ The certificate scripts live in `infrastructure/certs/` at the repository root, 
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `UUDEX_CERTS` | Override certificate output directory | `certs` |
+| `UUDEX_CERTS` | Override certificate output directory | `~/.config/uudex/tls` |
 
 ## Requirements
 

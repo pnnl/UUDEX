@@ -13,7 +13,8 @@ real deployment.
 ## Where files are written
 
 Both scripts write to `~/.config/uudex/tls` by default, never into the
-repository. To use another folder, set `UUDEX_CERTS` or pass `-o` / `--output-dir`:
+repository. The folder is created
+with mode 700, and a folder that other users can write is refused. To use another folder, set `UUDEX_CERTS` or pass `-o` / `--output-dir`:
 
 ```bash
 export UUDEX_CERTS=/custom/cert/path
@@ -47,8 +48,9 @@ export UUDEX_CERTS=/custom/cert/path
 ## generate-certs-from-existing-postgres.sh
 
 ```bash
-DB_PASSWORD=... ./generate-certs-from-existing-postgres.sh --dry-run
-DB_PASSWORD=... ./generate-certs-from-existing-postgres.sh --host db.example --active-only
+read -rs DB_PASSWORD; export DB_PASSWORD
+./generate-certs-from-existing-postgres.sh --dry-run
+./generate-certs-from-existing-postgres.sh --host db.example --active-only
 ```
 
 Set the password in the environment; a `--password` value shows in the
@@ -83,3 +85,7 @@ curl --cacert ~/.config/uudex/tls/ca.crt \
      --cert ~/.config/uudex/tls/alice.crt --key ~/.config/uudex/tls/alice.key \
      https://localhost:8443/
 ```
+
+## Tests
+
+Run `bats infrastructure/certs/tests/certs.bats` from the repository root (needs `bats` and `openssl`).
