@@ -31,6 +31,22 @@ Start the server (no secrets on the command line):
 
 The tests read `tests/.env.test` only.
 
+## Container
+
+Build, from this directory:
+
+    docker build -t uudex-server .
+
+Run with the secrets mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRETS_DIR` to it):
+
+    docker run --rm --read-only --tmpfs /tmp --memory 512m \
+      -e X_SSL_CERT=... -v /path/to/secrets:/run/secrets:ro uudex-server
+
+- Each secret file (`postgres_dsn`, `messagebus_connection`) must be owned by uid 10001 with mode 0400, or startup fails.
+- Use absolute paths for any setting you give the container. Relative paths resolve inside the virtualenv there, not in this directory.
+- SQLite is for tests only; the image has no SQLite driver and will not start with it.
+- Never publish port 8000. Only the verifying proxy may reach it, over an internal network.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
