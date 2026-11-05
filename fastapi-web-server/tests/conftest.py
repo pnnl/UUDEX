@@ -1,6 +1,7 @@
 import asyncio
 import os
 from collections.abc import AsyncGenerator, Generator
+from pathlib import Path
 
 import pytest
 from httpx import AsyncClient
@@ -29,8 +30,9 @@ async def setup_test_env(event_loop: asyncio.AbstractEventLoop) -> AsyncGenerato
 
     # Cleanup
     await shutdown_db()
-    if os.path.exists("test.db"):
-        os.remove("test.db")
+    test_db = Path(__file__).parent / "test.db"
+    if test_db.exists():
+        test_db.unlink()
 
 
 @pytest.fixture(scope="session")
