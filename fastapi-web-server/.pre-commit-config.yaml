@@ -1,0 +1,36 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.1.15
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        files: ^(src/|tests/).*\.py$
+      - id: ruff-format
+        files: ^(src/|tests/).*\.py$
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.8.0
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-pytz]
+        args: [--config-file=pyproject.toml, --ignore-missing-imports]
+        files: ^src/.*\.py$
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+        files: ^(src/|tests/).*\.(py|yaml|yml|toml|json|md)$
+      - id: end-of-file-fixer
+        files: ^(src/|tests/).*\.(py|yaml|yml|toml|json|md)$
+      - id: check-yaml
+        files: ^(src/|tests/|\.vscode/).*\.ya?ml$
+      - id: check-toml
+        files: ^(pyproject\.toml|src/|tests/).*\.toml$
+      - id: check-json
+        files: ^(src/|tests/|\.vscode/).*\.json$
+      - id: check-added-large-files
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: debug-statements
+        files: ^(src/|tests/).*\.py$
