@@ -26,7 +26,7 @@ DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-uudex}"
 DB_USER="${DB_USER:-uudex_user}"
-DB_PASSWORD="${DB_PASSWORD:-uudex}"
+DB_PASSWORD="${DB_PASSWORD:-}"
 
 # Function to display help
 show_help() {
@@ -42,7 +42,7 @@ show_help() {
     echo "  -P, --port PORT     Database port (default: $DB_PORT)"
     echo "  -d, --database DB   Database name (default: $DB_NAME)"
     echo "  -u, --user USER     Database user (default: $DB_USER)"
-    echo "  -p, --password PASS Database password (default: $DB_PASSWORD)"
+    echo "  -p, --password PASS Database password (required; prefer the DB_PASSWORD variable, a command-line value shows in the process list)"
     echo "  -c, --country CODE  Country code (default: $DEFAULT_COUNTRY)"
     echo "  -s, --state STATE   State or province (default: $DEFAULT_STATE)"
     echo "  -l, --city CITY     City or locality (default: $DEFAULT_CITY)"
@@ -60,7 +60,7 @@ show_help() {
     echo "  DB_PORT             Database port"
     echo "  DB_NAME             Database name"
     echo "  DB_USER             Database user"
-    echo "  DB_PASSWORD         Database password"
+    echo "  DB_PASSWORD         Database password (required, no default)"
     echo ""
     echo "Examples:"
     echo "  $0                                      # Generate all certificates with defaults"
@@ -153,6 +153,11 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [ -z "$DB_PASSWORD" ]; then
+    echo "Error: no database password. Set DB_PASSWORD or pass --password." >&2
+    exit 1
+fi
 
 # Check for required tools
 check_dependencies() {
