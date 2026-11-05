@@ -50,18 +50,6 @@ env | grep -i openapi | cut -d= -f1 | xargs -I {} unset {}
 # Ensure clean slate
 rm -rf uudex_api_client uudex-api-client
 
-# Temporarily disable ruff by renaming the system ruff
-RUFF_PATH=$(which ruff)
-restore_ruff() {
-    if [ -f "${RUFF_PATH}.bak" ]; then
-        mv "${RUFF_PATH}.bak" "$RUFF_PATH" 2>/dev/null || echo "Could not restore ruff"
-    fi
-}
-trap restore_ruff EXIT
-if [ -n "$RUFF_PATH" ]; then
-    mv "$RUFF_PATH" "${RUFF_PATH}.bak" 2>/dev/null || echo "Could not disable ruff temporarily"
-fi
-
 # openapi-python-client exits 0 even when it drops parts of the API, so a
 # warning in its output is treated as a failure.
 generate_client() {
@@ -75,10 +63,11 @@ generate_client() {
 }
 
 # Use generate with explicit meta setting
-if ! generate_client --url "${SERVER_URL}/openapi.json"; then
-    if [ "$?" -eq 2 ]; then
-        exit 1
-    fi
+gen_rc=0
+generate_client --url "${SERVER_URL}/openapi.json" || gen_rc=$?
+if [ "$gen_rc" -eq 2 ]; then
+    exit 1
+elif [ "$gen_rc" -ne 0 ]; then
     echo "Generation failed, trying with local file and none meta..."
     generate_client --path ./openapi.json || exit 1
 fi
