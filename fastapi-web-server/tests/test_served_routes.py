@@ -1,5 +1,6 @@
 import pytest
-from fastapi.routing import APIRoute, iter_route_contexts
+from fastapi.routing import iter_route_contexts
+from starlette.routing import Match
 
 from uudex_server.main import app
 
@@ -15,6 +16,9 @@ EXPECTED_ROUTES = {
     ("GET", "/endpoint/me"),
     ("GET", "/endpoint/{endpoint_id}"),
     ("GET", "/openapi.json"),
+    ("GET", "/redoc"),
+    ("HEAD", "/openapi.json"),
+    ("HEAD", "/redoc"),
     ("GET", "/participants/"),
     ("GET", "/subject/uuid/{subject_uuid}"),
     ("GET", "/subject/{subject_id}"),
@@ -78,21 +82,31 @@ async def cleanup_after_test():
 
 
 def served_routes() -> set[tuple[str, str]]:
-    """Read through routing so routers that FastAPI includes lazily are counted."""
+    """Every served route of any kind, read through routing so lazily included routers and
+    mounts are counted. A mount has no methods and is listed as MOUNT."""
     return {
         (method, ctx.path)
         for ctx in iter_route_contexts(app.routes)
-        if isinstance(ctx.original_route, APIRoute)
-        for method in ctx.methods
+        for method in (ctx.methods or {"MOUNT"})
     }
+
+
+def resolves(method: str, path: str) -> bool:
+    scope = {"type": "http", "method": method, "path": path}
+    return any(route.matches(scope)[0] != Match.NONE for route in app.routes)
 
 
 def test_served_routes_are_exactly_the_2024_surface():
     assert served_routes() == EXPECTED_ROUTES
 
 
-def test_no_v1_path_is_served():
-    assert [path for _, path in served_routes() if path.startswith("/v1")] == []
+@pytest.mark.parametrize("path", ["/v1", "/v1/", "/v1/subjects/", "/v1/endpoint/me", "/v1/probe"])
+def test_v1_paths_do_not_resolve(path):
+    assert resolves("GET", path) is False
+
+
+def test_resolver_detects_a_served_path():
+    assert resolves("GET", "/subjects/") is True
 
 
 def test_operation_ids_are_the_route_names_generated_clients_depend_on():
