@@ -1,11 +1,14 @@
 import sys
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 from uudex_server.core import get_logger
 from uudex_server.core.settings import Settings, get_settings
+from uudex_server.services.database_service import init_db, shutdown_db
 
 logger = get_logger("uudex_server.main")
 logger.debug("Starting UUDEX Server")
@@ -34,12 +37,23 @@ except Exception as e:
 
 from uudex_server.routes import add_routers
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    await init_db()
+    try:
+        yield
+    finally:
+        await shutdown_db()
+
+
 # Create FastAPI app, don't define docs url here, we are going to use our own endpoint.
 app = FastAPI(
     title="UUDEX API",
     version="1.1.0",
     description="UUDEX Data Exchange API - Version 1.1",
     docs_url=None,
+    lifespan=lifespan,
 )
 
 # Adds the endpoint routers to the FastAPI apphe FastAPI app
