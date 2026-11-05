@@ -14,6 +14,23 @@ See (DEVLIST.md) for features and status of project
 before allowing you to see anything.  NOTE: The client must have the ca and certificate key in the
 browser before going to this site.
 
+## Configuration
+
+Settings come from, in order of priority: environment variables, a `.env` file (if present), the files in `secrets/`, then defaults.
+
+1. Copy `.env.example` to `.env` and set `X_SSL_CERT`.
+2. Copy `secrets/example.postgres_dsn` to `secrets/postgres_dsn` and `secrets/example.messagebus_connection` to `secrets/messagebus_connection`, one value per file, and edit them. This is the recommended way. The database URL must use the async driver (`postgresql+asyncpg://`).
+3. Environment variables are allowed, but are visible to the same user and to root through `/proc/<pid>/environ`.
+4. Never pass a secret as a command-line argument; `ps` shows it.
+
+`UUDEX_SETTINGS` and `UUDEX_SECRETS_DIR` name another env file or secrets directory. A name that does not exist stops startup with an error. Relative paths are relative to this directory.
+
+Start the server (no secrets on the command line):
+
+    uvicorn uudex_server.main:app --host 127.0.0.1 --port 8000
+
+The tests read `tests/.env.test` only.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.

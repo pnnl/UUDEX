@@ -55,7 +55,8 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 async def shutdown_db():
     """Cleanup database connections"""
-    global _engine
+    global _engine, _async_session
+    _async_session = None
     if _engine is not None:
         await _engine.dispose()
         _engine = None

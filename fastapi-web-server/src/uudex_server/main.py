@@ -1,11 +1,15 @@
 import sys
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from uudex_server.core import get_logger
 from uudex_server.core.settings import Settings, get_settings
+from uudex_server.services.database_service import init_db, shutdown_db
 
 logger = get_logger("uudex_server.main")
 logger.debug("Starting UUDEX Server")
@@ -13,8 +17,14 @@ logger.debug("Starting UUDEX Server")
 
 def initialize_settings() -> Settings:
     try:
-        settings = get_settings()
-        return settings
+        return get_settings()
+    except ValidationError as e:
+        if "pytest" in sys.modules:
+            raise
+        # Names and error types only: the error input would echo secret values.
+        problems = [f"{'.'.join(map(str, err['loc']))} ({err['type']})" for err in e.errors()]
+        logger.error("Invalid settings: " + ", ".join(problems))
+        sys.exit(1)
     except ValueError as e:
         if "pytest" not in sys.modules:
             logger.error(str(e))
@@ -23,16 +33,20 @@ def initialize_settings() -> Settings:
 
 
 # Initialize settings
-try:
-    settings = initialize_settings()
-    logger.info("Settings initialized successfully")
-except Exception as e:
-    if "pytest" not in sys.modules:
-        logger.error(f"Failed to initialize settings: {e}")
-        sys.exit(1)
-    raise
+settings = initialize_settings()
+logger.info("Settings initialized successfully")
 
 from uudex_server.routes import add_routers
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    try:
+        await init_db()
+        yield
+    finally:
+        await shutdown_db()
+
 
 # Create FastAPI app, don't define docs url here, we are going to use our own endpoint.
 app = FastAPI(
@@ -40,6 +54,7 @@ app = FastAPI(
     version="1.1.0",
     description="UUDEX Data Exchange API - Version 1.1",
     docs_url=None,
+    lifespan=lifespan,
 )
 
 # Adds the endpoint routers to the FastAPI apphe FastAPI app

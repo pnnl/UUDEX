@@ -3,8 +3,12 @@ database-layer/db-init-us/03_uudex.sql
 #generated-client-api/uudex-api-client/
 certs/
 infrastructure/caddy/certs/
-secrets/messagebus_connection
-secrets/postgres_dsn
+secrets/*
+!secrets/example.*
+!secrets/README.md
+!.env.example
+!tests/.env.test
+tests/test.db
 .vscode/
 .idea/
 
