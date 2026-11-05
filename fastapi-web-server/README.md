@@ -45,7 +45,7 @@ Create an internal network shared only with the verifying proxy, then run the se
 
 The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRETS_DIR` to it). The default Docker bridge is not safe: a server started without `--network` is reachable from the host and from every other container on that bridge. Put the proxy and the database on the internal network too, since it has no outside access.
 
-- Each secret file (`postgres_dsn`, `messagebus_connection`) must be owned by uid 10001 with mode 0400, or startup fails.
+- Each secret file (`postgres_dsn`, `messagebus_connection`) must be readable by uid 10001; owner 10001 and mode 0400 is recommended.
 - Use absolute paths for any setting you give the container. Relative paths resolve inside the virtualenv there, not in this directory.
 - SQLite is for tests only; the image has no SQLite driver and will not start with it.
 - Never publish port 8000. Only the verifying proxy may reach it, over an internal network.
