@@ -9,15 +9,22 @@ DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="${HOME:-}/.config/uudex/tls"
+DEFAULT_CERTS_DIR="~/.config/uudex/tls"
 
-# Certificate output directory (can be overridden by UUDEX_CERTS environment variable).
-# Keys must never land in a working tree, so there is no relative default.
-CERTS_DIR="${UUDEX_CERTS:-$DEFAULT_CERTS_DIR}"
-if [ -z "${UUDEX_CERTS:-}" ] && [ -z "${HOME:-}" ]; then
-    echo "Error: HOME is not set; set UUDEX_CERTS to the output directory" >&2
-    exit 1
-fi
+# Output directory: -o, then UUDEX_CERTS, then ~/.config/uudex/tls. Keys must
+# never land in a working tree, so there is no relative default. An empty value
+# is resolved after argument parsing, so --help and -o work without HOME.
+CERTS_DIR="${UUDEX_CERTS:-}"
+
+resolve_certs_dir() {
+    if [ -z "$CERTS_DIR" ]; then
+        if [ -z "${HOME:-}" ]; then
+            echo "Error: HOME is not set; set UUDEX_CERTS or pass --output-dir" >&2
+            exit 1
+        fi
+        CERTS_DIR="$HOME/.config/uudex/tls"
+    fi
+}
 
 # Function to display help
 show_help() {
@@ -177,6 +184,8 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+resolve_certs_dir
 
 # If list option is specified, list certificates and exit
 if [ "$LIST_CERTS" = true ]; then
