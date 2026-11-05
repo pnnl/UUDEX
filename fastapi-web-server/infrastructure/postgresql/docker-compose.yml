@@ -1,3 +1,4 @@
+# Development-only example values. Not for real deployment.
 
 services:
   db:

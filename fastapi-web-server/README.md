@@ -2,6 +2,8 @@
 
 This server implementation uses FastAPI as its basis for data access.
 
+The example secrets, passwords and database role in this directory are for local development only. They are not for real deployment.
+
 See (DEVLIST.md) for features and status of project
 
 ## URLS for this site

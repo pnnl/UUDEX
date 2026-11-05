@@ -1,3 +1,4 @@
+-- Development-only example role and password. Not for real deployment.
 CREATE USER uudex_user WITH
 	LOGIN
 	SUPERUSER
