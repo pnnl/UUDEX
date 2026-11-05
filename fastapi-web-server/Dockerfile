@@ -11,8 +11,8 @@ COPY src ./src
 RUN /opt/venv/bin/pip install .
 
 FROM ${PYTHON_IMAGE}
-# hadolint ignore=DL3064
 # UUDEX_SECRETS_DIR is a directory path, not a secret value.
+# hadolint ignore=DL3064
 ENV PATH=/opt/venv/bin:$PATH \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
