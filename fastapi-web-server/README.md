@@ -12,14 +12,6 @@ See (DEVLIST.md) for features and status of project
 before allowing you to see anything.  NOTE: The client must have the ca and certificate key in the
 browser before going to this site.
 
-## NGINX Setup
-
-Install nginx to your system.
-
-Copy nginx/default.conf to /etc/nginx/conf.d/default.conf
-
-Execute sudo nginx -s reload to reload the service.
-
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
