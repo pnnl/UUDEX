@@ -1,4 +1,5 @@
 #!/bin/bash
+# Development-only helper. The certificates it makes are examples, not for real deployment.
 
 # Script to generate certificates from existing PostgreSQL endpoint data
 # This script reads the endpoint table and creates certificates for each certificate_dn

@@ -1,4 +1,5 @@
 #!/bin/bash
+# Development-only helper. The certificates it makes are examples, not for real deployment.
 
 # Default values
 DEFAULT_CLIENT_NAME="client"
