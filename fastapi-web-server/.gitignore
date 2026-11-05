@@ -4,7 +4,7 @@ database-layer/db-init-us/03_uudex.sql
 certs/
 infrastructure/caddy/certs/
 secrets/messagebus_connection
-secrets/postgres_dns
+secrets/postgres_dsn
 .vscode/
 .idea/
 
