@@ -111,7 +111,7 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
 @test "postgres script help shows the home-based default output directory" {
     run "$PG_SCRIPT" --help
     [ "$status" -eq 0 ]
-    [[ "$output" == *"~/.config/uudex/tls"* ]]
+    [[ "$output" == *'$HOME/.config/uudex/tls'* ]]
 }
 
 @test "postgres script refuses to run without a database password and never calls psql" {
