@@ -1,0 +1,14 @@
+# Allowlist: only what the build needs enters the context.
+*
+!pyproject.toml
+!README.md
+!src/
+
+# Inside src/, keep only Python sources and the one config file the package reads.
+src/**
+!src/**/*.py
+!src/**/auth_model.conf
+
+# Python sources can still sit beside caches or stray files.
+**/__pycache__
+**/*.py[cod]

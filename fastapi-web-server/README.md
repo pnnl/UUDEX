@@ -31,6 +31,25 @@ Start the server (no secrets on the command line):
 
 The tests read `tests/.env.test` only.
 
+## Container
+
+Build, from this directory:
+
+    docker build -t uudex-server .
+
+Create an internal network shared only with the verifying proxy, then run the server on it:
+
+    docker network create --internal uudex-internal
+    docker run --rm --network uudex-internal --read-only --tmpfs /tmp --memory 512m \
+      -e X_SSL_CERT=... -v /path/to/secrets:/run/secrets:ro uudex-server
+
+The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRETS_DIR` to it). The default Docker bridge is not safe: a server started without `--network` is reachable from the host and from every other container on that bridge. Put the proxy and the database on the internal network too, since it has no outside access. The host itself can still reach the container's address on that network, so keep untrusted users off the host.
+
+- Each secret file (`postgres_dsn`, `messagebus_connection`) must be readable by uid 10001; owner 10001 and mode 0400 is recommended.
+- Use absolute paths for any setting you give the container. Relative paths resolve inside the virtualenv there, not in this directory.
+- SQLite is for tests only; the image has no SQLite driver and will not start with it.
+- Never publish port 8000. Only the verifying proxy may reach it, over an internal network.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
