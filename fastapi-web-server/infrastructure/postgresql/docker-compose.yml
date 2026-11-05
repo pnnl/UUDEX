@@ -10,7 +10,7 @@ services:
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_HOST_AUTH_METHOD=md5
     ports:
-      - '5432:5432'
+      - '127.0.0.1:5432:5432'
     volumes:
       - ~/.docker-conf/postgresql_data:/var/lib/postgresql/data
       - ./db-init-us:/docker-entrypoint-initdb.d
@@ -20,8 +20,8 @@ services:
     image: rabbitmq:3-management
     container_name: 'rabbitmq'
     ports:
-      - 5672:5672
-      - 15672:15672
+      - 127.0.0.1:5672:5672
+      - 127.0.0.1:15672:15672
     environment:
       - "RABBITMQ_DEFAULT_USER=uudex"
       - "RABBITMQ_DEFAULT_PASS=uudex"
