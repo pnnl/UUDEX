@@ -267,3 +267,14 @@ async def test_failed_startup_still_disposes_the_engine(
         async with app.router.lifespan_context(app):
             pass
     assert database_service._engine is None
+
+
+def test_example_env_file_loads_with_placeholders_and_secrets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("POSTGRES_DSN", "X_SSL_CERT", "MESSAGEBUS_CONNECTION"):
+        monkeypatch.delenv(name, raising=False)
+    secrets = _secrets(tmp_path / "sec")
+    settings = Settings(_env_file=str(BASE_DIR / ".env.example"), _secrets_dir=str(secrets))
+    assert settings.x_ssl_cert
+    assert settings.db_uri == DSN
