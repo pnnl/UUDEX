@@ -91,14 +91,24 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
     [ "$(stat -c %a "$BATS_TEST_TMPDIR/private")" = "700" ]
 }
 
-@test "generate-certs.sh refuses an output folder that others can write" {
-    mkdir -p "$BATS_TEST_TMPDIR/shared"
-    chmod 777 "$BATS_TEST_TMPDIR/shared"
+@test "generate-certs.sh refuses an output folder that group or others can write" {
     cd "$WORKDIR"
-    run "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/shared"
+    for m in 775 757 777; do
+        mkdir -p "$BATS_TEST_TMPDIR/shared$m"
+        chmod "$m" "$BATS_TEST_TMPDIR/shared$m"
+        run "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/shared$m"
+        [ "$status" -ne 0 ] || { echo "accepted mode $m"; return 1; }
+        [[ "$output" == *"writable"* ]]
+        [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared$m")" ]
+    done
+}
+
+@test "generate-certs.sh refuses an output folder owned by someone else" {
+    [ ! -O /usr ] || skip "running as the owner of /usr"
+    cd "$WORKDIR"
+    run "$GEN_SCRIPT" alice -k 2048 -o /usr
     [ "$status" -ne 0 ]
-    [[ "$output" == *"writable"* ]]
-    [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared")" ]
+    [[ "$output" == *"owned by you"* ]]
 }
 
 @test "help text no longer suggests /tmp for the output folder" {
@@ -175,13 +185,29 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
     [ -s "$BATS_TEST_TMPDIR/nohome/alice.key" ]
 }
 
-@test "postgres script refuses an output folder that others can write" {
-    mkdir -p "$BATS_TEST_TMPDIR/shared"
-    chmod 777 "$BATS_TEST_TMPDIR/shared"
-    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/shared"
+@test "postgres script creates the output folder with mode 700" {
+    cd "$WORKDIR"
+    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/private"
+    [ "$status" -eq 0 ]
+    [ "$(stat -c %a "$BATS_TEST_TMPDIR/private")" = "700" ]
+}
+
+@test "postgres script refuses an output folder that group or others can write" {
+    for m in 775 757 777; do
+        mkdir -p "$BATS_TEST_TMPDIR/shared$m"
+        chmod "$m" "$BATS_TEST_TMPDIR/shared$m"
+        DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/shared$m"
+        [ "$status" -ne 0 ] || { echo "accepted mode $m"; return 1; }
+        [[ "$output" == *"writable"* ]]
+        [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared$m")" ]
+    done
+}
+
+@test "postgres script refuses an output folder owned by someone else" {
+    [ ! -O /usr ] || skip "running as the owner of /usr"
+    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o /usr
     [ "$status" -ne 0 ]
-    [[ "$output" == *"writable"* ]]
-    [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared")" ]
+    [[ "$output" == *"owned by you"* ]]
 }
 
 @test "gitignore ignores key and certificate files anywhere in the repository" {
@@ -208,6 +234,8 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
 
 @test "gitignore does not hide new files next to the scripts" {
     ignore_repo
-    ! is_ignored infrastructure/certs/new-helper.sh
-    ! is_ignored infrastructure/certs/tests/new.bats
+    run is_ignored infrastructure/certs/new-helper.sh
+    [ "$status" -ne 0 ]
+    run is_ignored infrastructure/certs/tests/new.bats
+    [ "$status" -ne 0 ]
 }
