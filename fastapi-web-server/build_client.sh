@@ -52,19 +52,35 @@ rm -rf uudex_api_client uudex-api-client
 
 # Temporarily disable ruff by renaming the system ruff
 RUFF_PATH=$(which ruff)
+restore_ruff() {
+    if [ -f "${RUFF_PATH}.bak" ]; then
+        mv "${RUFF_PATH}.bak" "$RUFF_PATH" 2>/dev/null || echo "Could not restore ruff"
+    fi
+}
+trap restore_ruff EXIT
 if [ -n "$RUFF_PATH" ]; then
     mv "$RUFF_PATH" "${RUFF_PATH}.bak" 2>/dev/null || echo "Could not disable ruff temporarily"
 fi
 
-# Use generate with explicit meta setting
-openapi-python-client generate --url "${SERVER_URL}/openapi.json" --meta none || {
-    echo "Generation failed, trying with local file and none meta..."
-    openapi-python-client generate --path ./openapi.json --meta none
+# openapi-python-client exits 0 even when it drops parts of the API, so a
+# warning in its output is treated as a failure.
+generate_client() {
+    local log
+    log=$(openapi-python-client generate "$@" --meta none 2>&1) || { echo "$log"; return 1; }
+    echo "$log"
+    if echo "$log" | grep -qi "warning"; then
+        echo "Error: openapi-python-client reported warnings; the client is incomplete"
+        return 2
+    fi
 }
 
-# Restore ruff if we disabled it
-if [ -f "${RUFF_PATH}.bak" ]; then
-    mv "${RUFF_PATH}.bak" "$RUFF_PATH" 2>/dev/null || echo "Could not restore ruff"
+# Use generate with explicit meta setting
+if ! generate_client --url "${SERVER_URL}/openapi.json"; then
+    if [ "$?" -eq 2 ]; then
+        exit 1
+    fi
+    echo "Generation failed, trying with local file and none meta..."
+    generate_client --path ./openapi.json || exit 1
 fi
 
 # Determine the generated client directory name (could be uudex-api-client or uudex_api_client)
