@@ -1,9 +1,9 @@
-import asyncio
 import os
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 from httpx import AsyncClient
 
 from uudex_server.core.settings import Settings, get_settings
@@ -11,16 +11,8 @@ from uudex_server.main import app
 from uudex_server.services.database_service import init_db, shutdown_db
 
 
-@pytest.fixture(scope="session")
-def event_loop() -> Generator[asyncio.AbstractEventLoop, None, None]:
-    """Create an instance of the default event loop for each test case."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
-
-
-@pytest.fixture(scope="session")
-async def setup_test_env(event_loop: asyncio.AbstractEventLoop) -> AsyncGenerator[None, None]:
+@pytest_asyncio.fixture(scope="session")
+async def setup_test_env() -> AsyncGenerator[None, None]:
     """Setup test environment before any tests run"""
     get_settings.cache_clear()  # Force settings reload
 
@@ -35,7 +27,7 @@ async def setup_test_env(event_loop: asyncio.AbstractEventLoop) -> AsyncGenerato
         test_db.unlink()
 
 
-@pytest.fixture(scope="session")
+@pytest_asyncio.fixture(scope="session")
 async def client(setup_test_env) -> AsyncGenerator[AsyncClient, None]:
     """Get async HTTP client for FastAPI testing"""
     # Use the transport parameter to connect to FastAPI app

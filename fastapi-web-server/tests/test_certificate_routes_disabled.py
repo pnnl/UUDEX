@@ -35,5 +35,6 @@ def test_openapi_lists_no_certificate_paths():
 
 
 def test_endpoint_routes_still_registered():
-    paths = {getattr(r, "path", "") for r in app.routes}
+    # Newer FastAPI wraps included routers lazily, so app.routes no longer lists their paths.
+    paths = set(app.openapi()["paths"])
     assert {"/endpoint/", "/endpoint/me", "/endpoint/{endpoint_id}"} <= paths
