@@ -11,17 +11,49 @@ DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="certs"
+DEFAULT_CERTS_DIR="\$HOME/.config/uudex/tls"
 
-# Certificate output directory (can be overridden by UUDEX_CERTS environment variable)
-CERTS_DIR="${UUDEX_CERTS:-$DEFAULT_CERTS_DIR}"
+# Output directory: -o, then UUDEX_CERTS, then ~/.config/uudex/tls. Keys must
+# never land in a working tree, so there is no relative default. An empty value
+# is resolved after argument parsing, so --help and -o work without HOME.
+CERTS_DIR="${UUDEX_CERTS:-}"
+
+resolve_certs_dir() {
+    if [ -z "$CERTS_DIR" ]; then
+        if [ -z "${HOME:-}" ]; then
+            echo "Error: HOME is not set; set UUDEX_CERTS or pass --output-dir" >&2
+            exit 1
+        fi
+        CERTS_DIR="$HOME/.config/uudex/tls"
+    fi
+}
 
 # Database connection settings
 DB_HOST="${DB_HOST:-localhost}"
 DB_PORT="${DB_PORT:-5432}"
 DB_NAME="${DB_NAME:-uudex}"
 DB_USER="${DB_USER:-uudex_user}"
-DB_PASSWORD="${DB_PASSWORD:-uudex}"
+DB_PASSWORD="${DB_PASSWORD:-}"
+
+# Keys go in this folder, so refuse one that others can write or that another
+# user owns: an existing ca.key there would be reused and a planted symlink
+# would be followed.
+prepare_certs_dir() {
+    (umask 077 && mkdir -p "$CERTS_DIR") || {
+        echo "Error: cannot create output folder $CERTS_DIR" >&2
+        exit 1
+    }
+    if [ ! -d "$CERTS_DIR" ] || [ ! -O "$CERTS_DIR" ]; then
+        echo "Error: output folder $CERTS_DIR must be a directory owned by you" >&2
+        exit 1
+    fi
+    local mode
+    mode=$(ls -ldL "$CERTS_DIR")
+    if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
+        echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
+        exit 1
+    fi
+}
 
 # Function to display help
 show_help() {
@@ -37,7 +69,7 @@ show_help() {
     echo "  -P, --port PORT     Database port (default: $DB_PORT)"
     echo "  -d, --database DB   Database name (default: $DB_NAME)"
     echo "  -u, --user USER     Database user (default: $DB_USER)"
-    echo "  -p, --password PASS Database password (default: $DB_PASSWORD)"
+    echo "  -p, --password PASS Database password (required; prefer the DB_PASSWORD variable, a command-line value shows in the process list)"
     echo "  -c, --country CODE  Country code (default: $DEFAULT_COUNTRY)"
     echo "  -s, --state STATE   State or province (default: $DEFAULT_STATE)"
     echo "  -l, --city CITY     City or locality (default: $DEFAULT_CITY)"
@@ -55,7 +87,7 @@ show_help() {
     echo "  DB_PORT             Database port"
     echo "  DB_NAME             Database name"
     echo "  DB_USER             Database user"
-    echo "  DB_PASSWORD         Database password"
+    echo "  DB_PASSWORD         Database password (required, no default)"
     echo ""
     echo "Examples:"
     echo "  $0                                      # Generate all certificates with defaults"
@@ -148,6 +180,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+resolve_certs_dir
+
+if [ -z "$DB_PASSWORD" ]; then
+    echo "Error: no database password. Set DB_PASSWORD or pass --password." >&2
+    exit 1
+fi
 
 # Check for required tools
 check_dependencies() {
@@ -279,9 +318,6 @@ generate_ca_if_needed() {
             return
         fi
 
-        # Create certs directory
-        mkdir -p "$CERTS_DIR"
-
         # Generate CA private key
         openssl genrsa -out "$CERTS_DIR/ca.key" "$KEY_SIZE"
 
@@ -380,6 +416,10 @@ main() {
 
     # Test database connection
     test_db_connection
+
+    if [ "$DRY_RUN" != true ]; then
+        prepare_certs_dir
+    fi
 
     # Generate CA if needed
     generate_ca_if_needed

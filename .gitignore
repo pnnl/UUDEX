@@ -40,4 +40,14 @@ rabbitmq-server.download.tar.xz
 /docs/source/volttron_api/
 *ecobee_*.json
 .env*
-/certs/
+# Key and certificate material, at any depth
+certs/
+# the script folder is not an output folder
+!/infrastructure/certs/
+*.key
+*.crt
+*.pem
+*.p12
+*.pfx
+*.csr
+*.srl

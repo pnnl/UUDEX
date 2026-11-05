@@ -9,10 +9,42 @@ DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="certs"
+DEFAULT_CERTS_DIR="\$HOME/.config/uudex/tls"
 
-# Certificate output directory (can be overridden by UUDEX_CERTS environment variable)
-CERTS_DIR="${UUDEX_CERTS:-$DEFAULT_CERTS_DIR}"
+# Output directory: -o, then UUDEX_CERTS, then ~/.config/uudex/tls. Keys must
+# never land in a working tree, so there is no relative default. An empty value
+# is resolved after argument parsing, so --help and -o work without HOME.
+CERTS_DIR="${UUDEX_CERTS:-}"
+
+resolve_certs_dir() {
+    if [ -z "$CERTS_DIR" ]; then
+        if [ -z "${HOME:-}" ]; then
+            echo "Error: HOME is not set; set UUDEX_CERTS or pass --output-dir" >&2
+            exit 1
+        fi
+        CERTS_DIR="$HOME/.config/uudex/tls"
+    fi
+}
+
+# Keys go in this folder, so refuse one that others can write or that another
+# user owns: an existing ca.key there would be reused and a planted symlink
+# would be followed.
+prepare_certs_dir() {
+    (umask 077 && mkdir -p "$CERTS_DIR") || {
+        echo "Error: cannot create output folder $CERTS_DIR" >&2
+        exit 1
+    }
+    if [ ! -d "$CERTS_DIR" ] || [ ! -O "$CERTS_DIR" ]; then
+        echo "Error: output folder $CERTS_DIR must be a directory owned by you" >&2
+        exit 1
+    fi
+    local mode
+    mode=$(ls -ldL "$CERTS_DIR")
+    if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
+        echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
+        exit 1
+    fi
+}
 
 # Function to display help
 show_help() {
@@ -45,7 +77,6 @@ show_help() {
     echo "  $0 bob \"Acme Corp\"              # Generate certificate for 'bob' at 'Acme Corp'"
     echo "  $0 alice \"Acme\" --days 730      # Generate 2-year certificate for 'alice'"
     echo "  $0 bob \"Corp\" -c CA -s Ontario  # Generate certificate with Canadian details"
-    echo "  UUDEX_CERTS=/tmp/certs $0 alice  # Output certificates to /tmp/certs"
     echo "  $0 alice --output-dir /custom/path # Output certificates to /custom/path"
     echo "  $0 --list                       # List existing certificates"
     echo ""
@@ -173,6 +204,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+resolve_certs_dir
+
 # If list option is specified, list certificates and exit
 if [ "$LIST_CERTS" = true ]; then
     list_certificates
@@ -209,8 +242,7 @@ else
     fi
 fi
 
-# Create certs directory
-mkdir -p "$CERTS_DIR"
+prepare_certs_dir
 
 # Generate CA only if it doesn't exist
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
