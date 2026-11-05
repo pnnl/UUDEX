@@ -25,18 +25,12 @@ class SessionAndUser:
 import uudex_server.repos as r
 
 from .dataset_routes import dataset_router, datasets_router
-from .dataset_routes import v1_router as dataset_v1_router
 from .participant_routes import participant_router, participants_router
-from .participant_routes import v1_router as participant_v1_router
 from .subject_routes import subject_router, subjects_router
-from .subject_routes import v1_router as subject_v1_router
 from .subscription_routes import subscription_router, subscriptions_router
-from .subscription_routes import v1_router as subscription_v1_router
 from .uudex_routes import endpoint_router
-from .uudex_routes import v1_router as endpoint_v1_router
 
 tags_metadata = [
-    {"name": "v1", "description": "API Version 1"},
     {"name": "participants", "description": "Participants API"},
     {"name": "endpoints", "description": "Endpoints API"},
     {"name": "certificates", "description": "Certificates/Admin API"},
@@ -77,13 +71,6 @@ def add_routers(app: FastAPI):
         app.openapi_tags = tags_metadata
     else:
         app.openapi_tags.extend(tags_metadata)
-
-    # Add v1 versioned routers
-    app.include_router(participant_v1_router)
-    app.include_router(subject_v1_router)
-    app.include_router(dataset_v1_router)
-    app.include_router(endpoint_v1_router)
-    app.include_router(subscription_v1_router)
 
     # Keep original routers for backward compatibility (optional)
     app.include_router(participant_router, tags=["participants"])

@@ -24,11 +24,7 @@ from uudex_server.repos.endpoint_repository import EndpointRepository
 endpoint_router = APIRouter(prefix="/endpoint")
 certificates_router = APIRouter(prefix="/certificates")
 
-# Create v1 parent router
-v1_router = APIRouter(prefix="/v1", tags=["v1"])
-v1_router.include_router(endpoint_router, tags=["v1", "endpoints"])
 # Certificate routes are off until certificate requests are replaced; do not re-enable.
-# v1_router.include_router(certificates_router, tags=["v1", "certificates"])
 
 
 # =====================================================

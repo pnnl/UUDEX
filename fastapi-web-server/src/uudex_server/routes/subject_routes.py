@@ -24,11 +24,6 @@ from uudex_server.services.message_services.base import UUDEXBrokerService
 subjects_router = APIRouter(prefix="/subjects")
 subject_router = APIRouter(prefix="/subject")
 
-# Create v1 parent router
-v1_router = APIRouter(prefix="/v1", tags=["v1"])
-v1_router.include_router(subjects_router, tags=["v1", "subjects"])
-v1_router.include_router(subject_router, tags=["v1", "subjects"])
-
 
 def get_broker_service() -> UUDEXBrokerService:
     """Dependency to get message broker service"""

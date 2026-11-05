@@ -17,18 +17,10 @@ from uudex_server.services.database_service import get_db
 
 _log = logging.getLogger(__name__)
 
-# Create v1 routers
 subjects_router = APIRouter(prefix="/subjects")
 subject_router = APIRouter(prefix="/subject")
 datasets_router = APIRouter(prefix="/datasets")
 dataset_router = APIRouter(prefix="/dataset")
-
-# Create v1 parent router
-v1_router = APIRouter(prefix="/v1", tags=["v1"])
-v1_router.include_router(subjects_router, tags=["v1", "subjects"])
-v1_router.include_router(subject_router, tags=["v1", "subjects"])
-v1_router.include_router(datasets_router, tags=["v1", "datasets"])
-v1_router.include_router(dataset_router, tags=["v1", "datasets"])
 
 
 @subjects_router.get("/")
