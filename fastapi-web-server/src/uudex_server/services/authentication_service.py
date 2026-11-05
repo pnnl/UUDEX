@@ -143,7 +143,7 @@ class AuthenticationService:
 
 # UUDEX
 
-# Copyright © 2021, Battelle Memorial Institute
+# Copyright (c) 2021, Battelle Memorial Institute
 
 # 1. Battelle Memorial Institute (hereinafter Battelle) hereby grants
 # permission to any person or entity lawfully obtaining a copy of this

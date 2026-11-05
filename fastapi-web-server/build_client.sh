@@ -250,7 +250,7 @@ poetry build
 cd ..
 
 echo ""
-echo "✅ UUDEX API client built successfully!"
+echo "UUDEX API client built successfully!"
 echo ""
 echo "The generated client includes all UUDEX endpoints:"
 echo "  - Complete subject management CRUD operations"
