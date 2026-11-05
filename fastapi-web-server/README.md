@@ -50,6 +50,26 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
 - SQLite is for tests only; the image has no SQLite driver and will not start with it.
 - Never publish port 8000. Only the verifying proxy may reach it, over an internal network.
 
+## Compose
+
+`compose.yaml` starts the server and PostgreSQL. The values in the example files are for local development only. They are not for real deployment.
+
+1. Copy the examples (each secret is one file, mounted under `/run/secrets`; none goes in `environment:` or on a command line):
+
+       cp .env.compose.example .env.compose
+       for n in postgres_password postgres_dsn messagebus_connection x_ssl_cert; do
+         cp secrets/example.compose_$n secrets/compose_$n; chmod 0444 secrets/compose_$n
+       done
+       chmod 0700 secrets
+
+2. Edit the copies. The password in `compose_postgres_password` and the one inside `compose_postgres_dsn` must match; the DSN host is `db`. The files must be readable by uid 10001 (the server) and root (PostgreSQL). Compose cannot set file secret owners, so mode 0444 inside a 0700 directory keeps other host users out.
+3. Start and stop:
+
+       docker compose --env-file .env.compose up --build -d
+       docker compose --env-file .env.compose down
+
+The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. The host can still reach the server's address on the `app` network, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
