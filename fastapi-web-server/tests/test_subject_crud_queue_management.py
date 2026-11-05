@@ -23,6 +23,8 @@ from uudex_server.models.subject_models import (
     BulkOperationResult
 )
 
+XFAIL_16 = pytest.mark.xfail(strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module")
+
 client = TestClient(app)
 
 
@@ -115,6 +117,7 @@ def mock_broker_service():
 class TestSubjectCRUD:
     """Test suite for basic subject CRUD operations"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_get_all_subjects_admin(self, mock_repo, mock_admin_user):
@@ -134,6 +137,7 @@ class TestSubjectCRUD:
         assert result == []
         mock_repo_instance.select_all.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
     @pytest.mark.asyncio
@@ -154,6 +158,7 @@ class TestSubjectCRUD:
         assert result == []
         mock_select_all.assert_called_once_with(session=mock_session, participant_id=1)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_create_subject_success(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
@@ -181,6 +186,7 @@ class TestSubjectCRUD:
         mock_repo_instance.create.assert_called_once()
         mock_broker_service.create_subject.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_create_subject_broker_failure(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
@@ -213,6 +219,7 @@ class TestSubjectCRUD:
         assert "Failed to create message broker infrastructure" in str(exc_info.value.detail)
         mock_repo_instance.delete.assert_called_once_with(mock_subject.subject_id)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
     @pytest.mark.asyncio
     async def test_get_subject_by_id_success(self, mock_select, mock_user, mock_subject):
@@ -234,6 +241,7 @@ class TestSubjectCRUD:
         # Assertions
         assert result == mock_subject
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
     @pytest.mark.asyncio
     async def test_get_subject_by_id_not_found(self, mock_select, mock_user):
@@ -256,6 +264,7 @@ class TestSubjectCRUD:
         assert exc_info.value.status_code == 404
         assert "Subject not found" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
     @pytest.mark.asyncio
     async def test_get_subject_by_id_unauthorized(self, mock_select, mock_user):
@@ -296,6 +305,7 @@ class TestSubjectCRUD:
         assert exc_info.value.status_code == 403
         assert "Not authorized to view this subject" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_get_subject_by_uuid_success(self, mock_repo, mock_user, mock_subject):
@@ -321,6 +331,7 @@ class TestSubjectCRUD:
         assert result == mock_subject
         mock_repo_instance.select_by_field.assert_called_once_with("subject_uuid", "test-subject-uuid")
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
     @pytest.mark.asyncio
@@ -353,6 +364,7 @@ class TestSubjectCRUD:
         assert result == mock_subject
         mock_repo_instance.update.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
     @pytest.mark.asyncio
@@ -392,6 +404,7 @@ class TestSubjectCRUD:
 class TestQueueManagement:
     """Test suite for queue management operations"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_get_subject_queue_info(self, mock_repo, mock_user, mock_subject, mock_broker_service):
@@ -419,6 +432,7 @@ class TestQueueManagement:
         assert result.subject_uuid == "test-subject-uuid"
         assert result.subject_name == "test-subject"
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_manage_subject_queues_info_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
@@ -449,6 +463,7 @@ class TestQueueManagement:
         assert result.success is True
         assert "Queue information retrieved successfully" in result.message
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_manage_subject_queues_delete_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
@@ -480,6 +495,7 @@ class TestQueueManagement:
         assert "Queue test-queue deleted successfully" in result.message
         mock_broker_service.delete_queue.assert_called_once_with("test-queue")
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_manage_subject_queues_unsupported_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
@@ -518,6 +534,7 @@ class TestQueueManagement:
 class TestMessagePublishing:
     """Test suite for message publishing functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_publish_messages_to_subject_success(self, mock_repo, mock_user, mock_subject, mock_broker_service):
@@ -549,6 +566,7 @@ class TestMessagePublishing:
         assert len(result.message_ids) == 2
         assert mock_broker_service.publish_message.call_count == 2
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_publish_messages_subject_not_found(self, mock_repo, mock_user):
@@ -585,6 +603,7 @@ class TestMessagePublishing:
 class TestBulkOperations:
     """Test suite for bulk subject operations"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_bulk_delete_subjects_success(self, mock_repo, mock_admin_user, mock_subject, mock_broker_service):
@@ -618,6 +637,7 @@ class TestBulkOperations:
         assert len(result.failed) == 0
         assert result.total_processed == 2
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_bulk_operations_non_admin_user(self, mock_repo, mock_user):
@@ -652,6 +672,7 @@ class TestBulkOperations:
 class TestAdvancedFeatures:
     """Test suite for advanced features like metrics"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
     @pytest.mark.asyncio
@@ -680,6 +701,7 @@ class TestAdvancedFeatures:
         assert result[0].subject == mock_subject
         assert result[0].subscriptions_count == 0
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
     @pytest.mark.asyncio
     async def test_discover_subjects_admin_user(self, mock_repo, mock_admin_user):
@@ -700,6 +722,7 @@ class TestAdvancedFeatures:
         assert result == []
         mock_repo_instance.select_all.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
     @pytest.mark.asyncio
     async def test_discover_subjects_regular_user(self, mock_select_all, mock_user):

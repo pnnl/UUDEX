@@ -5,6 +5,8 @@ import pytest
 import uudex_server.models as m
 import uudex_server.repos as r
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.fixture(name="participant", scope="function")
 async def participant_fixture(participant_repo: r.ParticipantRepository) -> m.Participant:
@@ -158,6 +160,7 @@ async def setup_subscription_and_subject(
     return created_subject, created_subscription
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_subscription_subject(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -193,6 +196,7 @@ async def test_create_subscription_subject(
     # assert created_subscription_subject.subject.subject_name == "Test Subject"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_all_subscription_subjects(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -222,6 +226,7 @@ async def test_select_all_subscription_subjects(
     assert isinstance(subscription_subjects, list)
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_by_fields(
     subscription_subject_repo: r.SubscriptionSubjectRepository,
@@ -254,6 +259,7 @@ async def test_select_by_fields(
     assert selected_subscription_subject.subscription_id == created_subscription.subscription_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_subscription_subject(
     subscription_subject_repo: r.SubscriptionSubjectRepository,

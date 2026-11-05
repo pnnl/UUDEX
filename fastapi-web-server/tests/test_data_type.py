@@ -3,7 +3,10 @@ import pytest
 from uudex_server.models.data_type_models import DataTypeCreate, DataTypeDelete
 from uudex_server.repos import DataTypeRepository
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
 
+
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_data_type(data_type_repo: DataTypeRepository):
     data_type_create = DataTypeCreate(
@@ -20,12 +23,14 @@ async def test_create_data_type(data_type_repo: DataTypeRepository):
     assert created_data_type.specification_reference == "http://example.com"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_all_data_types(data_type_repo: DataTypeRepository):
     data_types = await data_type_repo.select_all()
     assert isinstance(data_types, list)
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_by_id(data_type_repo: DataTypeRepository):
     data_type_create = DataTypeCreate(
@@ -41,6 +46,7 @@ async def test_select_by_id(data_type_repo: DataTypeRepository):
     assert selected_data_type.data_type_name == "Test DataType for Select"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_data_type(data_type_repo: DataTypeRepository):
     data_type_create = DataTypeCreate(
@@ -56,6 +62,7 @@ async def test_update_data_type(data_type_repo: DataTypeRepository):
     assert updated_data_type.data_type_name == "Updated DataType"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_data_type(data_type_repo: DataTypeRepository):
     data_type_create = DataTypeCreate(

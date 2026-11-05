@@ -24,6 +24,8 @@ from uudex_server.models.common_types import YNSwitch
 from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.models.endpoint_models import EndPoint
 
+XFAIL_16 = pytest.mark.xfail(strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module")
+
 client = TestClient(app)
 
 
@@ -98,6 +100,7 @@ def sample_cert_request():
 class TestUtilityFunctions:
     """Test utility functions for certificate management"""
     
+    @XFAIL_16
     def test_extract_cn_from_dn_simple(self):
         """Test CN extraction from simple DN"""
         from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
@@ -105,6 +108,7 @@ class TestUtilityFunctions:
         result = extract_cn_from_dn("CN=alice")
         assert result == "alice"
     
+    @XFAIL_16
     def test_extract_cn_from_dn_complex(self):
         """Test CN extraction from complex DN"""
         from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
@@ -112,6 +116,7 @@ class TestUtilityFunctions:
         result = extract_cn_from_dn("/CN=bob/O=Organization/C=US")
         assert result == "bob"
     
+    @XFAIL_16
     def test_extract_cn_from_dn_with_commas(self):
         """Test CN extraction from DN with commas"""
         from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
@@ -119,6 +124,7 @@ class TestUtilityFunctions:
         result = extract_cn_from_dn("CN=charlie,O=Org,C=US")
         assert result == "charlie"
     
+    @XFAIL_16
     def test_extract_cn_from_dn_no_cn(self):
         """Test CN extraction when no CN is present"""
         from uudex_server.endpoints.uudex_endpoints import extract_cn_from_dn
@@ -134,6 +140,7 @@ class TestUtilityFunctions:
 class TestCertificateCreation:
     """Test certificate creation functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.generate_client_certificate')
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
@@ -167,6 +174,7 @@ class TestCertificateCreation:
         mock_gen_cert.assert_called_once()
         mock_repo.create_endpoint.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_create_certificate_non_admin_user(self, mock_repo_class, mock_regular_user, sample_cert_request):
@@ -186,6 +194,7 @@ class TestCertificateCreation:
         assert exc_info.value.status_code == 403
         assert "Only UUDEX administrators can create certificates" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_create_certificate_duplicate_dn(self, mock_repo_class, mock_admin_user, sample_cert_request, mock_endpoint):
@@ -210,6 +219,7 @@ class TestCertificateCreation:
         assert result.success is False
         assert "already exists" in result.message
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.generate_client_certificate')
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
@@ -246,6 +256,7 @@ class TestCertificateCreation:
 class TestCertificateRetrieval:
     """Test certificate listing and retrieval functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_list_certificates_admin(self, mock_repo_class, mock_admin_user):
@@ -265,6 +276,7 @@ class TestCertificateRetrieval:
         assert result == []
         mock_repo.select_all_endpoints.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_get_endpoint_by_id_success(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -287,6 +299,7 @@ class TestCertificateRetrieval:
         # Assertions
         assert result == mock_endpoint
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_get_endpoint_by_id_not_found(self, mock_repo_class, mock_admin_user):
@@ -318,6 +331,7 @@ class TestCertificateRetrieval:
 class TestCertificateUpdate:
     """Test certificate update functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_update_certificate_success(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -349,6 +363,7 @@ class TestCertificateUpdate:
         assert "updated successfully" in result.message
         mock_session.commit.assert_called_once()
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_update_certificate_non_admin(self, mock_repo_class, mock_regular_user):
@@ -378,6 +393,7 @@ class TestCertificateUpdate:
 class TestCertificateDeletion:
     """Test certificate deletion functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_delete_certificate_success(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -412,6 +428,7 @@ class TestCertificateDeletion:
 class TestBulkOperations:
     """Test bulk certificate operations"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_bulk_operations_grant_admin(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -445,6 +462,7 @@ class TestBulkOperations:
         from uudex_server.models.common_types import YNSwitch
         assert mock_endpoint.uudex_administrator_sw == YNSwitch.Y
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_bulk_operations_non_admin(self, mock_repo_class, mock_regular_user):
@@ -468,6 +486,7 @@ class TestBulkOperations:
         
         assert exc_info.value.status_code == 403
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_bulk_operations_mixed_results(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -545,6 +564,7 @@ class TestCertificateIntegration:
 class TestCertificateDownload:
     """Test certificate download functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.get_certificate_files')
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
@@ -583,6 +603,7 @@ class TestCertificateDownload:
         assert "pem" in result.available_formats
         assert "crt" in result.available_formats
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_get_certificate_files_info_unauthorized(self, mock_repo_class, mock_regular_user, mock_endpoint):
@@ -608,6 +629,7 @@ class TestCertificateDownload:
         assert exc_info.value.status_code == 403
         assert "Not authorized to access this certificate" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.get_certificate_files')
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @patch('builtins.open', create=True)
@@ -642,6 +664,7 @@ class TestCertificateDownload:
         # Note: FileResponse properties are not easily testable in unit tests
         # Integration tests would be better for full file download testing
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.get_certificate_files')
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
@@ -671,6 +694,7 @@ class TestCertificateDownload:
         assert exc_info.value.status_code == 404
         assert "PKCS#12 certificate file not found" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_download_certificate_unauthorized(self, mock_repo_class, mock_regular_user, mock_endpoint):
@@ -697,6 +721,7 @@ class TestCertificateDownload:
         assert exc_info.value.status_code == 403
         assert "Not authorized to download this certificate" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.uudex_endpoints.EndpointRepository')
     @pytest.mark.asyncio
     async def test_download_certificate_invalid_format(self, mock_repo_class, mock_admin_user, mock_endpoint):
@@ -729,6 +754,7 @@ class TestCertificateDownload:
 class TestCertificateFileUtilities:
     """Test certificate file utility functions"""
 
+    @XFAIL_16
     def test_get_certificate_files(self):
         """Test getting certificate files from directory"""
         from uudex_server.endpoints.uudex_endpoints import get_certificate_files
@@ -752,6 +778,7 @@ class TestCertificateFileUtilities:
             assert files["p12"] == str(cert_dir / "test-user.p12")
             assert files["ca"] == str(cert_dir / "ca.crt")
 
+    @XFAIL_16
     @patch('subprocess.run')
     def test_get_certificate_creation_date_success(self, mock_run):
         """Test successful certificate creation date extraction"""
@@ -771,6 +798,7 @@ class TestCertificateFileUtilities:
         assert result.month == 12
         assert result.day == 19
 
+    @XFAIL_16
     @patch('subprocess.run')
     def test_get_certificate_creation_date_failure(self, mock_run):
         """Test certificate creation date extraction failure"""

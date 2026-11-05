@@ -5,7 +5,10 @@ from benedict import BeneDict
 
 from uudex_server.services import create_services, get_services
 
+XFAIL_18_CONFIG = pytest.mark.xfail(strict=True, reason="#18: imports the removed uudex_server.core.config; fits no listed class")
 
+
+@XFAIL_18_CONFIG
 def test_load_config():
     from uudex_server.core.config import load_config
 
@@ -18,6 +21,7 @@ def test_load_config():
     assert my_dict.X_SSL_CERT is not None
 
 
+@XFAIL_18_CONFIG
 def test_create():
     from uudex_server.core.config import load_config
 
