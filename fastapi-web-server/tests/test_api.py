@@ -3,7 +3,9 @@ from fastapi.testclient import TestClient
 
 from uudex_server.main import app  # Assuming main.py where FastAPI instance is created
 
-XFAIL_18_401 = pytest.mark.xfail(strict=True, reason="#18: certificate header gets 401 where 200 is expected")
+XFAIL_18_401 = pytest.mark.xfail(
+    strict=True, reason="#18: certificate header gets 401 where 200 is expected"
+)
 
 # Replace 'sqlite:///:memory:' with your actual database URL if required
 DATABASE_URL = "sqlite:///:memory:"

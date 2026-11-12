@@ -6,7 +6,7 @@ from .base import BaseModel, TimeStampMixin
 
 
 class AuthGroupBase(BaseModel):
-    group_uuid: str    # UUID stored as string
+    group_uuid: str  # UUID stored as string
     group_name: str
     description: str | None = None
 
@@ -16,7 +16,7 @@ class AuthGroup(AuthGroupBase, TimeStampMixin, table=True):
     __table_args__ = {"extend_existing": True}
 
     group_id: int | None = Field(default=None, primary_key=True)
-    active_sw: str = Field(default='Y', max_length=1)    # 'Y' or 'N'
+    active_sw: str = Field(default="Y", max_length=1)  # 'Y' or 'N'
 
 
 class AuthGroupCreate(AuthGroupBase):
@@ -38,7 +38,7 @@ class AuthRole(AuthRoleBase, TimeStampMixin, table=True):
     __table_args__ = {"extend_existing": True}
 
     role_id: int | None = Field(default=None, primary_key=True)
-    active_sw: str = Field(default='Y', max_length=1)    # 'Y' or 'N'
+    active_sw: str = Field(default="Y", max_length=1)  # 'Y' or 'N'
 
 
 class AuthRoleCreate(AuthRoleBase):

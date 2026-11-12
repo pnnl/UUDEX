@@ -21,7 +21,9 @@ from uudex_server.models.subject_models import (
     SubjectWithMetrics,
 )
 
-XFAIL_16 = pytest.mark.xfail(strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module")
+XFAIL_16 = pytest.mark.xfail(
+    strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module"
+)
 
 client = TestClient(app)
 
@@ -29,6 +31,7 @@ client = TestClient(app)
 # =====================================================
 # FIXTURES
 # =====================================================
+
 
 @pytest.fixture
 def mock_user():
@@ -38,7 +41,7 @@ def mock_user():
         participant_id=1,
         endpoint_name="test-endpoint",
         certificate_dn="CN=test-user",
-        uudex_administrator_sw="N"
+        uudex_administrator_sw="N",
     )
     return AuthenticatedUser(endpoint=endpoint)
 
@@ -51,7 +54,7 @@ def mock_admin_user():
         participant_id=1,
         endpoint_name="admin-endpoint",
         certificate_dn="CN=admin-user",
-        uudex_administrator_sw="Y"
+        uudex_administrator_sw="Y",
     )
     return AuthenticatedUser(endpoint=endpoint)
 
@@ -72,7 +75,7 @@ def mock_subject():
         priority=None,
         backing_exchange_name="e_test-subject_test-subject-uuid",
         owner_participant_id=1,
-        dataset_definition_id=1
+        dataset_definition_id=1,
     )
 
 
@@ -91,7 +94,7 @@ def mock_subject_create():
         priority=None,
         backing_exchange_name="e_test-subject_test-subject-uuid",
         owner_participant_id=1,
-        dataset_definition_id=1
+        dataset_definition_id=1,
     )
 
 
@@ -112,11 +115,12 @@ def mock_broker_service():
 # BASIC CRUD OPERATIONS TESTS
 # =====================================================
 
+
 class TestSubjectCRUD:
     """Test suite for basic subject CRUD operations"""
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
     async def test_get_all_subjects_admin(self, mock_repo, mock_admin_user):
         """Test getting all subjects as admin user"""
@@ -136,8 +140,8 @@ class TestSubjectCRUD:
         mock_repo_instance.select_all.assert_called_once()
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_all_subjects")
     @pytest.mark.asyncio
     async def test_get_all_subjects_regular_user(self, mock_select_all, mock_repo, mock_user):
         """Test getting subjects as regular user (filtered by participant)"""
@@ -157,9 +161,11 @@ class TestSubjectCRUD:
         mock_select_all.assert_called_once_with(session=mock_session, participant_id=1)
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_create_subject_success(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
+    async def test_create_subject_success(
+        self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service
+    ):
         """Test successful subject creation"""
         from uudex_server.endpoints.subject_endpoints import create_subject
 
@@ -176,7 +182,7 @@ class TestSubjectCRUD:
             subject_data=mock_subject_create,
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -185,9 +191,11 @@ class TestSubjectCRUD:
         mock_broker_service.create_subject.assert_called_once()
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_create_subject_broker_failure(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
+    async def test_create_subject_broker_failure(
+        self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service
+    ):
         """Test subject creation with broker failure (should rollback)"""
         from uudex_server.endpoints.subject_endpoints import create_subject
 
@@ -209,7 +217,7 @@ class TestSubjectCRUD:
                 subject_data=mock_subject_create,
                 session=mock_session,
                 user=mock_user,
-                broker=mock_broker_service
+                broker=mock_broker_service,
             )
 
         # Assertions
@@ -218,7 +226,7 @@ class TestSubjectCRUD:
         mock_repo_instance.delete.assert_called_once_with(mock_subject.subject_id)
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id")
     @pytest.mark.asyncio
     async def test_get_subject_by_id_success(self, mock_select, mock_user, mock_subject):
         """Test getting subject by ID with proper authorization"""
@@ -230,17 +238,13 @@ class TestSubjectCRUD:
         mock_select.return_value = mock_subject
 
         # Call endpoint
-        result = await get_subject_by_id(
-            subject_id=1,
-            session=mock_session,
-            user=mock_user
-        )
+        result = await get_subject_by_id(subject_id=1, session=mock_session, user=mock_user)
 
         # Assertions
         assert result == mock_subject
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id")
     @pytest.mark.asyncio
     async def test_get_subject_by_id_not_found(self, mock_select, mock_user):
         """Test getting non-existent subject by ID"""
@@ -252,18 +256,14 @@ class TestSubjectCRUD:
 
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
-            await get_subject_by_id(
-                subject_id=999,
-                session=mock_session,
-                user=mock_user
-            )
+            await get_subject_by_id(subject_id=999, session=mock_session, user=mock_user)
 
         # Assertions
         assert exc_info.value.status_code == 404
         assert "Subject not found" in str(exc_info.value.detail)
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id")
     @pytest.mark.asyncio
     async def test_get_subject_by_id_unauthorized(self, mock_select, mock_user):
         """Test getting subject by ID with insufficient authorization"""
@@ -287,24 +287,20 @@ class TestSubjectCRUD:
             priority=None,
             backing_exchange_name="e_test-subject_test-subject-uuid",
             owner_participant_id=999,  # Different participant
-            dataset_definition_id=1
+            dataset_definition_id=1,
         )
         mock_select.return_value = different_subject
 
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
-            await get_subject_by_id(
-                subject_id=1,
-                session=mock_session,
-                user=mock_user
-            )
+            await get_subject_by_id(subject_id=1, session=mock_session, user=mock_user)
 
         # Assertions
         assert exc_info.value.status_code == 403
         assert "Not authorized to view this subject" in str(exc_info.value.detail)
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
     async def test_get_subject_by_uuid_success(self, mock_repo, mock_user, mock_subject):
         """Test getting subject by UUID"""
@@ -320,18 +316,18 @@ class TestSubjectCRUD:
 
         # Call endpoint
         result = await get_subject_by_uuid(
-            subject_uuid="test-subject-uuid",
-            session=mock_session,
-            user=mock_user
+            subject_uuid="test-subject-uuid", session=mock_session, user=mock_user
         )
 
         # Assertions
         assert result == mock_subject
-        mock_repo_instance.select_by_field.assert_called_once_with("subject_uuid", "test-subject-uuid")
+        mock_repo_instance.select_by_field.assert_called_once_with(
+            "subject_uuid", "test-subject-uuid"
+        )
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id")
     @pytest.mark.asyncio
     async def test_update_subject_success(self, mock_select, mock_repo, mock_user, mock_subject):
         """Test successful subject update"""
@@ -355,7 +351,7 @@ class TestSubjectCRUD:
             subject_update=update_data,
             session=mock_session,
             user=mock_user,
-            broker=Mock()
+            broker=Mock(),
         )
 
         # Assertions
@@ -363,10 +359,12 @@ class TestSubjectCRUD:
         mock_repo_instance.update.assert_called_once()
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_subject_by_id")
     @pytest.mark.asyncio
-    async def test_delete_subject_success(self, mock_select, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_delete_subject_success(
+        self, mock_select, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test successful subject deletion"""
         from uudex_server.endpoints.subject_endpoints import delete_subject
 
@@ -382,10 +380,7 @@ class TestSubjectCRUD:
 
         # Call endpoint
         result = await delete_subject(
-            subject_id=1,
-            session=mock_session,
-            user=mock_user,
-            broker=mock_broker_service
+            subject_id=1, session=mock_session, user=mock_user, broker=mock_broker_service
         )
 
         # Assertions
@@ -399,13 +394,16 @@ class TestSubjectCRUD:
 # QUEUE MANAGEMENT TESTS
 # =====================================================
 
+
 class TestQueueManagement:
     """Test suite for queue management operations"""
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_get_subject_queue_info(self, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_get_subject_queue_info(
+        self, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test getting queue information for a subject"""
         from uudex_server.endpoints.subject_endpoints import get_subject_queue_info
 
@@ -422,7 +420,7 @@ class TestQueueManagement:
             subject_uuid="test-subject-uuid",
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -431,9 +429,11 @@ class TestQueueManagement:
         assert result.subject_name == "test-subject"
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_manage_subject_queues_info_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_manage_subject_queues_info_action(
+        self, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test queue management with info action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
 
@@ -453,7 +453,7 @@ class TestQueueManagement:
             queue_request=queue_request,
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -462,9 +462,11 @@ class TestQueueManagement:
         assert "Queue information retrieved successfully" in result.message
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_manage_subject_queues_delete_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_manage_subject_queues_delete_action(
+        self, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test queue management with delete action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
 
@@ -484,7 +486,7 @@ class TestQueueManagement:
             queue_request=queue_request,
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -494,9 +496,11 @@ class TestQueueManagement:
         mock_broker_service.delete_queue.assert_called_once_with("test-queue")
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_manage_subject_queues_unsupported_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_manage_subject_queues_unsupported_action(
+        self, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test queue management with unsupported action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
 
@@ -516,7 +520,7 @@ class TestQueueManagement:
             queue_request=queue_request,
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -529,13 +533,16 @@ class TestQueueManagement:
 # MESSAGE PUBLISHING TESTS
 # =====================================================
 
+
 class TestMessagePublishing:
     """Test suite for message publishing functionality"""
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_publish_messages_to_subject_success(self, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_publish_messages_to_subject_success(
+        self, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test successful message publishing to subject"""
         from uudex_server.endpoints.subject_endpoints import publish_messages_to_subject
 
@@ -555,7 +562,7 @@ class TestMessagePublishing:
             publish_request=publish_request,
             session=mock_session,
             user=mock_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -565,7 +572,7 @@ class TestMessagePublishing:
         assert mock_broker_service.publish_message.call_count == 2
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
     async def test_publish_messages_subject_not_found(self, mock_repo, mock_user):
         """Test publishing to non-existent subject"""
@@ -586,7 +593,7 @@ class TestMessagePublishing:
                 publish_request=publish_request,
                 session=mock_session,
                 user=mock_user,
-                broker=Mock()
+                broker=Mock(),
             )
 
         # Assertions
@@ -598,13 +605,16 @@ class TestMessagePublishing:
 # BULK OPERATIONS TESTS
 # =====================================================
 
+
 class TestBulkOperations:
     """Test suite for bulk subject operations"""
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
-    async def test_bulk_delete_subjects_success(self, mock_repo, mock_admin_user, mock_subject, mock_broker_service):
+    async def test_bulk_delete_subjects_success(
+        self, mock_repo, mock_admin_user, mock_subject, mock_broker_service
+    ):
         """Test successful bulk deletion of subjects"""
         from uudex_server.endpoints.subject_endpoints import bulk_subject_operations
 
@@ -616,17 +626,14 @@ class TestBulkOperations:
         mock_repo_instance.delete = AsyncMock()
         mock_repo.return_value = mock_repo_instance
 
-        bulk_request = BulkSubjectOperation(
-            subject_uuids=["uuid1", "uuid2"],
-            operation="delete"
-        )
+        bulk_request = BulkSubjectOperation(subject_uuids=["uuid1", "uuid2"], operation="delete")
 
         # Call endpoint
         result = await bulk_subject_operations(
             bulk_request=bulk_request,
             session=mock_session,
             user=mock_admin_user,
-            broker=mock_broker_service
+            broker=mock_broker_service,
         )
 
         # Assertions
@@ -636,7 +643,7 @@ class TestBulkOperations:
         assert result.total_processed == 2
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
     async def test_bulk_operations_non_admin_user(self, mock_repo, mock_user):
         """Test bulk operations with non-admin user (should fail)"""
@@ -644,18 +651,12 @@ class TestBulkOperations:
 
         mock_session = Mock(spec=AsyncSession)
 
-        bulk_request = BulkSubjectOperation(
-            subject_uuids=["uuid1"],
-            operation="delete"
-        )
+        bulk_request = BulkSubjectOperation(subject_uuids=["uuid1"], operation="delete")
 
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await bulk_subject_operations(
-                bulk_request=bulk_request,
-                session=mock_session,
-                user=mock_user,
-                broker=Mock()
+                bulk_request=bulk_request, session=mock_session, user=mock_user, broker=Mock()
             )
 
         # Assertions
@@ -667,14 +668,17 @@ class TestBulkOperations:
 # ADVANCED FEATURES TESTS
 # =====================================================
 
+
 class TestAdvancedFeatures:
     """Test suite for advanced features like metrics"""
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_all_subjects")
     @pytest.mark.asyncio
-    async def test_get_subjects_with_metrics(self, mock_select_all, mock_repo, mock_user, mock_subject, mock_broker_service):
+    async def test_get_subjects_with_metrics(
+        self, mock_select_all, mock_repo, mock_user, mock_subject, mock_broker_service
+    ):
         """Test getting subjects with metrics"""
         from uudex_server.endpoints.subject_endpoints import get_subjects_with_metrics
 
@@ -688,9 +692,7 @@ class TestAdvancedFeatures:
 
         # Call endpoint
         result = await get_subjects_with_metrics(
-            session=mock_session,
-            user=mock_user,
-            broker=mock_broker_service
+            session=mock_session, user=mock_user, broker=mock_broker_service
         )
 
         # Assertions
@@ -700,7 +702,7 @@ class TestAdvancedFeatures:
         assert result[0].subscriptions_count == 0
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.SubjectRepository')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.SubjectRepository")
     @pytest.mark.asyncio
     async def test_discover_subjects_admin_user(self, mock_repo, mock_admin_user):
         """Test discover subjects as admin user"""
@@ -721,7 +723,7 @@ class TestAdvancedFeatures:
         mock_repo_instance.select_all.assert_called_once()
 
     @XFAIL_16
-    @patch('uudex_server.endpoints.subject_endpoints.pr.select_all_subjects')
+    @patch("uudex_server.endpoints.subject_endpoints.pr.select_all_subjects")
     @pytest.mark.asyncio
     async def test_discover_subjects_regular_user(self, mock_select_all, mock_user):
         """Test discover subjects as regular user"""
@@ -745,6 +747,7 @@ class TestAdvancedFeatures:
 # VALIDATION TESTS
 # =====================================================
 
+
 class TestValidation:
     """Test suite for input validation"""
 
@@ -763,7 +766,7 @@ class TestValidation:
             priority=None,
             backing_exchange_name="test-exchange",
             owner_participant_id=1,
-            dataset_definition_id=1
+            dataset_definition_id=1,
         )
         assert subject_create.subject_name == "test-subject"
         assert subject_create.subject_uuid == "test-uuid"
@@ -783,19 +786,13 @@ class TestValidation:
         assert queue_request.queue_name is None
 
         # Request with queue name
-        queue_request_with_name = QueueManagementRequest(
-            action="delete",
-            queue_name="test-queue"
-        )
+        queue_request_with_name = QueueManagementRequest(action="delete", queue_name="test-queue")
         assert queue_request_with_name.queue_name == "test-queue"
 
     def test_bulk_operation_validation(self):
         """Test BulkSubjectOperation model validation"""
         # Valid bulk operation
-        bulk_op = BulkSubjectOperation(
-            subject_uuids=["uuid1", "uuid2"],
-            operation="delete"
-        )
+        bulk_op = BulkSubjectOperation(subject_uuids=["uuid1", "uuid2"], operation="delete")
         assert len(bulk_op.subject_uuids) == 2
         assert bulk_op.operation == "delete"
 

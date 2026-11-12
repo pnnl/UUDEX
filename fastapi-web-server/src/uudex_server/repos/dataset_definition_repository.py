@@ -5,7 +5,6 @@ from uudex_server.repos import Repository
 
 
 class DatasetDefinitionRepository(Repository[DatasetDefinition]):
-
     def __init__(self, session: Session):
         super().__init__(DatasetDefinition, session=session, id_field="dataset_definition_id")
 

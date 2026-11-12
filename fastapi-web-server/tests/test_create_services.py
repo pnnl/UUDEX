@@ -5,7 +5,9 @@ from benedict import BeneDict
 
 from uudex_server.services import create_services, get_services
 
-XFAIL_18_CONFIG = pytest.mark.xfail(strict=True, reason="#18: imports the removed uudex_server.core.config; fits no listed class")
+XFAIL_18_CONFIG = pytest.mark.xfail(
+    strict=True, reason="#18: imports the removed uudex_server.core.config; fits no listed class"
+)
 
 
 @XFAIL_18_CONFIG

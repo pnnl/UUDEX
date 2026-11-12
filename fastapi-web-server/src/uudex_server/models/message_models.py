@@ -10,7 +10,9 @@ class MessageContent(BaseModel):
     payload: str = Field(description="The message content/payload")
     message_id: str | None = Field(default=None, description="Unique message identifier")
     timestamp: datetime | None = Field(default=None, description="Message timestamp")
-    properties: dict[str, Any] | None = Field(default=None, description="Additional message properties")
+    properties: dict[str, Any] | None = Field(
+        default=None, description="Additional message properties"
+    )
 
 
 class MessageConsumeRequest(BaseModel):
@@ -32,7 +34,9 @@ class MessageConsumeResponse(BaseModel):
 class MessagePublishRequest(BaseModel):
     """Request model for publishing messages to a subject."""
 
-    messages: list[str] = Field(min_length=1, max_length=50, description="List of message payloads to publish")
+    messages: list[str] = Field(
+        min_length=1, max_length=50, description="List of message payloads to publish"
+    )
     payload_encoding: str = Field(default="string", description="Encoding type for payloads")
 
 

@@ -53,7 +53,9 @@ async def cleanup_after_test():
 
 
 @pytest_asyncio.fixture
-async def dataset_definition_repo(setup_test_env) -> AsyncGenerator[DatasetDefinitionRepository, None]:
+async def dataset_definition_repo(
+    setup_test_env,
+) -> AsyncGenerator[DatasetDefinitionRepository, None]:
     """Repository bound to a session on the test database"""
     async with get_db_session() as session:
         yield DatasetDefinitionRepository(session)

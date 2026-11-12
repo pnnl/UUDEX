@@ -66,9 +66,7 @@ def _secrets(path: Path, dsn: str = DSN) -> Path:
     return path
 
 
-def test_cert_setting_loads_from_env_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_cert_setting_loads_from_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("POSTGRES_DSN", "X_SSL_CERT", "MESSAGEBUS_CONNECTION"):
         monkeypatch.delenv(name, raising=False)
     env_file = _write_env(tmp_path / "settings.env")

@@ -44,7 +44,6 @@ import abc
 
 
 class UUDEXBrokerService(abc.ABC):
-
     @staticmethod
     def build_queue_name(tag, subject_name, subscription_uuid) -> str:
         return f"q_{tag}_{subject_name}_{subscription_uuid}"
@@ -55,8 +54,9 @@ class UUDEXBrokerService(abc.ABC):
 
     # return newly created "queue"
     @abc.abstractmethod
-    def create_subscription_subject(self, subscription_uuid, subject_uuid, subject_name,
-                                    tag) -> str:
+    def create_subscription_subject(
+        self, subscription_uuid, subject_uuid, subject_name, tag
+    ) -> str:
         # pure virtual
         pass
 
@@ -96,12 +96,13 @@ class UUDEXBrokerService(abc.ABC):
 
     @abc.abstractmethod
     def create_subscription_subject_with_performance_constraints(
-            self,
-            subscription_uuid,
-            subject_uuid,
-            subject_name,
-            tag,
-            max_queue_size_kb=None,
-            max_message_count=None,
-            full_queue_behavior="NO_CONSTRAINT"):
+        self,
+        subscription_uuid,
+        subject_uuid,
+        subject_name,
+        tag,
+        max_queue_size_kb=None,
+        max_message_count=None,
+        full_queue_behavior="NO_CONSTRAINT",
+    ):
         pass

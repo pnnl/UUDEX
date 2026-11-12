@@ -8,13 +8,13 @@ class AuthenticatedUser(BaseModel):
 
     # TODO use SubjectAcl service to determine these
     def is_admin(self) -> bool:
-        return self.endpoint.uudex_administrator_sw.upper() == 'Y'
+        return self.endpoint.uudex_administrator_sw.upper() == "Y"
 
     def is_participant_admin(self) -> bool:
-        return self.endpoint.participant_administrator_sw.upper() == 'Y'
+        return self.endpoint.participant_administrator_sw.upper() == "Y"
 
     def is_active(self) -> bool:
-        return self.endpoint.active_sw.upper() == 'Y'
+        return self.endpoint.active_sw.upper() == "Y"
 
 
 #             g.endpoint_id = endpoint_cached.endpoint_id

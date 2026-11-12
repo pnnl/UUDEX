@@ -81,7 +81,7 @@ async def consume_messages(
     subscription_uuid: str,
     consume_request: MessageConsumeRequest,
     session: SessionDep,
-    user: UserDep
+    user: UserDep,
 ) -> MessageConsumeResponse:
     """
     Consume messages from a subscription's queue.
@@ -94,10 +94,7 @@ async def consume_messages(
         subscription_uuid=subscription_uuid
     )
     if not subscription:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Subscription not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
 
     # Check authorization - users can only consume from their own subscriptions
     if not user.is_admin():
@@ -106,7 +103,7 @@ async def consume_messages(
         if subscription.owner_endpoint_id != endpoint.endpoint_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to consume messages from this subscription"
+                detail="Not authorized to consume messages from this subscription",
             )
 
     # Get subscription subjects to find the queue names
@@ -121,7 +118,7 @@ async def consume_messages(
             messages=[],
             total_consumed=0,
             subscription_uuid=subscription_uuid,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
 
     # Get the message broker service
@@ -141,7 +138,7 @@ async def consume_messages(
         queue_name = broker_service.build_queue_name(
             tag="uudex",  # Default tag used in UUDEX
             subject_name=sub_subject.subject.subject_name,
-            subscription_uuid=subscription_uuid
+            subscription_uuid=subscription_uuid,
         )
 
         # Consume messages from this queue
@@ -152,10 +149,10 @@ async def consume_messages(
         if raw_messages:
             for raw_msg in raw_messages:
                 message_content = MessageContent(
-                    payload=raw_msg.get('payload', ''),
-                    message_id=raw_msg.get('message_id'),
-                    timestamp=raw_msg.get('timestamp'),
-                    properties=raw_msg.get('properties')
+                    payload=raw_msg.get("payload", ""),
+                    message_id=raw_msg.get("message_id"),
+                    timestamp=raw_msg.get("timestamp"),
+                    properties=raw_msg.get("properties"),
                 )
                 all_messages.append(message_content)
                 remaining_messages -= 1
@@ -167,5 +164,5 @@ async def consume_messages(
         messages=all_messages,
         total_consumed=len(all_messages),
         subscription_uuid=subscription_uuid,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
     )
