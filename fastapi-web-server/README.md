@@ -48,27 +48,37 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
 - Each secret file (`postgres_dsn`, `messagebus_connection`) must be readable by uid 10001; owner 10001 and mode 0400 is recommended.
 - Use absolute paths for any setting you give the container. Relative paths resolve inside the virtualenv there, not in this directory.
 - SQLite is for tests only; the image has no SQLite driver and will not start with it.
-- Never publish port 8000. Only the verifying proxy may reach it, over an internal network.
+- Never publish port 8000. Only the verifying proxy may reach it, over an internal network. The image listens on all addresses, so on a network shared with other containers, pass `--host <one address>` to uvicorn as `compose.yaml` does.
 
 ## Compose
 
 `compose.yaml` starts the server and PostgreSQL. The values in the example files are for local development only. They are not for real deployment.
 
-1. Copy the examples (each secret is one file, mounted under `/run/secrets`; none goes in `environment:` or on a command line):
+1. Copy the examples (each secret is one file, mounted under `/run/secrets`; none goes in `environment:` or on a command line). Existing copies are kept, so it is safe to run this again:
 
-       cp .env.compose.example .env.compose
+       [ -e .env.compose ] || cp .env.compose.example .env.compose
        for n in postgres_password postgres_dsn messagebus_connection x_ssl_cert; do
-         cp secrets/example.compose_$n secrets/compose_$n; chmod 0444 secrets/compose_$n
+         [ -e secrets/compose_$n ] || cp secrets/example.compose_$n secrets/compose_$n
        done
+
+2. Edit the copies. The password in `compose_postgres_password` and the one inside `compose_postgres_dsn` must match; the DSN host is `db`.
+3. Lock the files. They must be readable by uid 10001 (the server) and root (PostgreSQL). Compose cannot set file secret owners, so mode 0444 inside a 0700 directory keeps other host users out. To edit a file later, `chmod u+w` it first.
+
+       chmod 0444 secrets/compose_*
        chmod 0700 secrets
 
-2. Edit the copies. The password in `compose_postgres_password` and the one inside `compose_postgres_dsn` must match; the DSN host is `db`. The files must be readable by uid 10001 (the server) and root (PostgreSQL). Compose cannot set file secret owners, so mode 0444 inside a 0700 directory keeps other host users out.
-3. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops:
+4. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops:
 
        docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
        docker compose --env-file .env.compose down
 
-The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. The host can still reach the server's address on the `app` network, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` together with the `command` and the healthcheck. The host can still reach the server's `app` address, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+
+The database password takes effect only when the `db_data` volume is first created. Editing `compose_postgres_password` later does not change the role's password; the old one keeps working. To change it, run `ALTER ROLE` in the running database, then update both secret files to match and recreate the server:
+
+    docker compose --env-file .env.compose exec db psql -U postgres_user -d uudex -c "ALTER ROLE postgres_user PASSWORD 'new-password'"
+
+Or run `docker compose --env-file .env.compose down -v`, which deletes the database and starts clean. Do not leave a real password in your shell history.
 
 "Healthy" for the server means only that it answers HTTP on `/openapi.json`. It does not show that the database is reachable or usable.
 
