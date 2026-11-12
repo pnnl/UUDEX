@@ -1,0 +1,107 @@
+# Development stack: UUDEX server and PostgreSQL. Example values are not for real deployment.
+# Start and stop commands: see README, "Compose".
+name: uudex
+
+services:
+  db:
+    image: postgres:18.1-alpine3.22@sha256:270579ee277a572fa8cfdbaec0e1ff588bb7247da92d25165c7237c483e565d9
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set in .env.compose}
+      POSTGRES_DB: ${POSTGRES_DB:?set in .env.compose}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    # PostgreSQL 18 keeps its data under /var/lib/postgresql/<major>, so mount the parent.
+    volumes:
+      - db_data:/var/lib/postgresql
+    networks:
+      - db
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 200
+    init: true
+    # The entrypoint chowns the data directory and drops from root to postgres; on a reused
+    # volume it also needs DAC_OVERRIDE, and tini needs KILL to pass the stop signal on.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+      - KILL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  server:
+    build:
+      context: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    # No ports: published ports would let anyone forge the client-certificate header.
+    # The verifying proxy joins the "app" network to reach this service.
+    secrets:
+      - postgres_dsn
+      - messagebus_connection
+      - x_ssl_cert
+    # Bind to the app address only: the server also sits on the db network, and PostgreSQL
+    # (or anything else there) must not reach the port that trusts the client-cert header.
+    command: ["uvicorn", "uudex_server.main:app", "--host", "172.29.77.10", "--port", "8000"]
+    networks:
+      app:
+        ipv4_address: 172.29.77.10
+      db:
+    read_only: true
+    tmpfs:
+      - /tmp
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 200
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen('http://172.29.77.10:8000/openapi.json', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+networks:
+  # Both networks are internal: no outside access, and nothing is published.
+  app:
+    internal: true
+    # Fixed so the server can bind to its app address. To change the subnet, change every place
+    # that holds it: this subnet, ipv4_address and --host in the server command, and the
+    # healthcheck URL.
+    ipam:
+      config:
+        - subnet: 172.29.77.0/24
+  db:
+    internal: true
+
+volumes:
+  db_data:
+
+# File secrets are bind mounts, so uid/gid/mode here would be ignored. The host files must
+# be readable by uid 10001 (the server) and root (PostgreSQL); see README.
+secrets:
+  postgres_password:
+    file: ./secrets/compose_postgres_password
+  postgres_dsn:
+    file: ./secrets/compose_postgres_dsn
+  messagebus_connection:
+    file: ./secrets/compose_messagebus_connection
+  x_ssl_cert:
+    file: ./secrets/compose_x_ssl_cert
