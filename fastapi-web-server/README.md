@@ -70,6 +70,8 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
 
 The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. The host can still reach the server's address on the `app` network, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
 
+"Healthy" for the server means only that it answers HTTP on `/openapi.json`. It does not show that the database is reachable or usable.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
