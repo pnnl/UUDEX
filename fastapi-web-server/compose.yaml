@@ -22,7 +22,7 @@ services:
     pids_limit: 200
     init: true
     # The entrypoint chowns the data directory and drops from root to postgres; on a reused
-    # volume it also needs DAC_OVERRIDE.
+    # volume it also needs DAC_OVERRIDE, and tini needs KILL to pass the stop signal on.
     cap_drop:
       - ALL
     cap_add:
@@ -30,6 +30,7 @@ services:
       - SETUID
       - SETGID
       - DAC_OVERRIDE
+      - KILL
     security_opt:
       - no-new-privileges:true
     healthcheck:
