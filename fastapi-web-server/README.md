@@ -72,11 +72,16 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
        docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
        docker compose --env-file .env.compose down
 
-The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` together with the `command` and the healthcheck. The host can still reach the server's `app` address, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change the subnet in `compose.yaml` together with `ipv4_address`, the `--host` address in the `command`, and the healthcheck URL: four places in all. The host can still reach the server's `app` address, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
 
-The database password takes effect only when the `db_data` volume is first created. Editing `compose_postgres_password` later does not change the role's password; the old one keeps working. To change it, run `ALTER ROLE` in the running database, then update both secret files to match and recreate the server:
+The database password takes effect only when the `db_data` volume is first created. Editing `compose_postgres_password` later does not change the role's password; the old one keeps working. To change it, open `psql` in the running database and use `\password`, which prompts for the new password so it never appears on a command line or in your shell history:
 
-    docker compose --env-file .env.compose exec db psql -U postgres_user -d uudex -c "ALTER ROLE postgres_user PASSWORD 'new-password'"
+    docker compose --env-file .env.compose exec db psql -U postgres_user -d uudex
+    \password postgres_user
+
+Then update both secret files to match (`chmod u+w` them first) and recreate the server. Plain `up -d` keeps the old DSN, so force it:
+
+    docker compose --env-file .env.compose up -d --wait --force-recreate server
 
 Or run `docker compose --env-file .env.compose down -v`, which deletes the database and starts clean. Do not leave a real password in your shell history.
 

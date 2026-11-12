@@ -1,5 +1,5 @@
 # Development stack: UUDEX server and PostgreSQL. Example values are not for real deployment.
-# Start: docker compose --env-file .env.compose up --build   (see README, "Compose").
+# Start and stop commands: see README, "Compose".
 name: uudex
 
 services:
@@ -82,7 +82,9 @@ networks:
   # Both networks are internal: no outside access, and nothing is published.
   app:
     internal: true
-    # Fixed so the server can bind to its app address; change it with the command and healthcheck.
+    # Fixed so the server can bind to its app address. To change the subnet, change every place
+    # that holds it: this subnet, ipv4_address and --host in the server command, and the
+    # healthcheck URL.
     ipam:
       config:
         - subnet: 172.29.77.0/24
