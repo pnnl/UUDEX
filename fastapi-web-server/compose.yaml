@@ -18,8 +18,16 @@ services:
     networks:
       - db
     mem_limit: 512m
+    memswap_limit: 512m
     pids_limit: 200
     init: true
+    # The entrypoint chowns the data directory and then drops from root to postgres.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     healthcheck:
@@ -53,6 +61,7 @@ services:
     tmpfs:
       - /tmp
     mem_limit: 512m
+    memswap_limit: 512m
     pids_limit: 200
     init: true
     cap_drop:
