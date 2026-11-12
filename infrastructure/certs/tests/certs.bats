@@ -239,3 +239,88 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
     run is_ignored infrastructure/certs/tests/new.bats
     [ "$status" -ne 0 ]
 }
+
+# generate-certs.sh must fail loudly: non-zero status, a message naming the
+# problem, no success line, and no key written.
+
+assert_refused_without_files() {
+    local dir="$1" needle="$2"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$needle"* ]]
+    [[ "$output" != *"successfully"* ]]
+    [ -z "$(ls -A "$dir" 2>/dev/null)" ]
+}
+
+@test "generate-certs.sh --key-size 0 fails with a message and writes no key" {
+    cd "$WORKDIR"
+    run timeout 5 "$GEN_SCRIPT" alice -k 0 -o "$BATS_TEST_TMPDIR/ks0"
+    assert_refused_without_files "$BATS_TEST_TMPDIR/ks0" "--key-size"
+}
+
+@test "generate-certs.sh rejects key sizes below 2048 and non-numbers" {
+    cd "$WORKDIR"
+    for v in 1024 2047 abc 20.48; do
+        run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/kv$v"
+        assert_refused_without_files "$BATS_TEST_TMPDIR/kv$v" "--key-size"
+    done
+}
+
+@test "generate-certs.sh rejects --days that is zero, negative or not a number" {
+    cd "$WORKDIR"
+    for v in 0 abc 1.5 -5; do
+        run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/d$v"
+        [ "$status" -ne 0 ] || { echo "accepted days $v"; return 1; }
+        [[ "$output" != *"successfully"* ]]
+        [ ! -e "$BATS_TEST_TMPDIR/d$v/ca.key" ]
+    done
+    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d abc -o "$BATS_TEST_TMPDIR/dabc2"
+    assert_refused_without_files "$BATS_TEST_TMPDIR/dabc2" "--days"
+}
+
+@test "generate-certs.sh stops with a named step when openssl fails" {
+    cd "$WORKDIR"
+    mkdir -p "$BATS_TEST_TMPDIR/fakebin"
+    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/fakebin/openssl"
+    chmod +x "$BATS_TEST_TMPDIR/fakebin/openssl"
+    PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/failing"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"step failed: generate CA key"* ]]
+    [[ "$output" != *"successfully"* ]]
+}
+
+@test "generate-certs.sh refuses an existing owned folder it cannot write, naming it" {
+    [ "$(id -u)" -ne 0 ] || skip "root can write to a mode 0500 folder"
+    cd "$WORKDIR"
+    mkdir -p "$BATS_TEST_TMPDIR/readonly"
+    chmod 500 "$BATS_TEST_TMPDIR/readonly"
+    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/readonly"
+    chmod 700 "$BATS_TEST_TMPDIR/readonly"
+    assert_refused_without_files "$BATS_TEST_TMPDIR/readonly" "$BATS_TEST_TMPDIR/readonly"
+    [[ "$output" == *"not writable"* ]]
+}
+
+@test "generate-certs.sh refuses each value option given last with no value" {
+    cd "$WORKDIR"
+    for opt in --domain -c --country -s --state -l --city -d --days -k --key-size -o --output-dir; do
+        run timeout 5 "$GEN_SCRIPT" alice "$opt"
+        [ "$status" -ne 124 ] || { echo "$opt hung"; return 1; }
+        [ "$status" -ne 0 ] || { echo "$opt accepted with no value"; return 1; }
+        [[ "$output" == *"$opt requires a value"* ]] || { echo "$opt: $output"; return 1; }
+    done
+}
+
+@test "generate-certs.sh refuses a value option followed by another option or an empty value" {
+    cd "$WORKDIR"
+    run timeout 5 "$GEN_SCRIPT" alice --domain --server-only -o "$BATS_TEST_TMPDIR/dd"
+    [ "$status" -ne 0 ]
+    [ "$status" -ne 124 ]
+    [[ "$output" == *"--domain requires a value"* ]]
+    run timeout 5 "$GEN_SCRIPT" alice -o -k 2048
+    [ "$status" -ne 0 ]
+    [ "$status" -ne 124 ]
+    [[ "$output" == *"-o requires a value"* ]]
+    run timeout 5 "$GEN_SCRIPT" alice -s "" -o "$BATS_TEST_TMPDIR/empty"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"-s requires a value"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/empty" ]
+}

@@ -1,6 +1,12 @@
 #!/bin/bash
 # Development-only helper. The certificates it makes are examples, not for real deployment.
 
+# -E so the ERR trap also fires inside functions. STEP names what was running
+# when a command failed.
+set -Eeuo pipefail
+STEP="starting up"
+trap 'echo "Error: step failed: $STEP (exit status $?)" >&2' ERR
+
 # Default values
 DEFAULT_CLIENT_NAME="client"
 DEFAULT_ORG="Organization"
@@ -40,8 +46,38 @@ prepare_certs_dir() {
     fi
     local mode
     mode=$(ls -ldL "$CERTS_DIR")
+    if [ ! -w "$CERTS_DIR" ] || [ ! -x "$CERTS_DIR" ]; then
+        echo "Error: output folder $CERTS_DIR is not writable by you; fix its permissions or choose another" >&2
+        exit 1
+    fi
     if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
         echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
+        exit 1
+    fi
+}
+
+# A value option needs a following value that is not itself an option.
+need_value() {
+    local opt="$1" argc="$2" value="$3"
+    if [ "$argc" -lt 2 ] || [ -z "$value" ]; then
+        echo "Error: $opt requires a value" >&2
+        exit 1
+    fi
+    if [[ "$value" == -* ]]; then
+        echo "Error: $opt requires a value, got the option-like '$value'" >&2
+        exit 1
+    fi
+}
+
+# Checked before any file is written: openssl accepts some bad values and
+# fails on others, and the failure used to be reported as success.
+validate_numbers() {
+    if ! [[ "$KEY_SIZE" =~ ^[1-9][0-9]{3,4}$ ]] || [ "$KEY_SIZE" -lt 2048 ]; then
+        echo "Error: --key-size must be a whole number of 2048 or more, got '$KEY_SIZE'" >&2
+        exit 1
+    fi
+    if ! [[ "$DAYS" =~ ^[1-9][0-9]{0,5}$ ]]; then
+        echo "Error: --days must be a whole number from 1 to 999999, got '$DAYS'" >&2
         exit 1
     fi
 }
@@ -88,6 +124,7 @@ show_help() {
 
 # Function to list certificates
 list_certificates() {
+    STEP="list certificates"
     echo "Certificates in directory: $CERTS_DIR"
     echo "=================================================="
 
@@ -157,30 +194,37 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --domain)
+            need_value "$1" "$#" "${2-}"
             DOMAINS+=("$2")
             shift 2
             ;;
         -c|--country)
+            need_value "$1" "$#" "${2-}"
             COUNTRY="$2"
             shift 2
             ;;
         -s|--state)
+            need_value "$1" "$#" "${2-}"
             STATE="$2"
             shift 2
             ;;
         -l|--city)
+            need_value "$1" "$#" "${2-}"
             CITY="$2"
             shift 2
             ;;
         -d|--days)
+            need_value "$1" "$#" "${2-}"
             DAYS="$2"
             shift 2
             ;;
         -k|--key-size)
+            need_value "$1" "$#" "${2-}"
             KEY_SIZE="$2"
             shift 2
             ;;
         -o|--output-dir)
+            need_value "$1" "$#" "${2-}"
             CERTS_DIR="$2"
             shift 2
             ;;
@@ -242,16 +286,17 @@ else
     fi
 fi
 
+validate_numbers
 prepare_certs_dir
 
 # Generate CA only if it doesn't exist
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
     echo "Generating new CA certificate..."
 
-    # Generate CA private key
+    STEP="generate CA key"
     openssl genrsa -out "$CERTS_DIR/ca.key" "$KEY_SIZE"
 
-    # Generate CA certificate
+    STEP="generate CA certificate"
     openssl req -new -x509 -days "$DAYS" -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=LocalCA"
 
     echo "CA certificate generated successfully!"
@@ -272,10 +317,10 @@ generate_server_certificate() {
 
     echo "Generating server certificate for domains: ${domains[*]}"
 
-    # Generate server private key
+    STEP="generate server key"
     openssl genrsa -out "$CERTS_DIR/${cert_name}.key" "$KEY_SIZE"
 
-    # Create a config file for SAN (Subject Alternative Names)
+    STEP="write server certificate config"
     local config_file="$CERTS_DIR/${cert_name}.conf"
     cat > "$config_file" << EOF
 [req]
@@ -305,13 +350,13 @@ EOF
         ((i++))
     done
 
-    # Generate server certificate signing request with SAN
+    STEP="generate server certificate request"
     openssl req -new -key "$CERTS_DIR/${cert_name}.key" -out "$CERTS_DIR/${cert_name}.csr" -config "$config_file"
 
-    # Generate server certificate signed by CA with SAN extensions
+    STEP="sign server certificate"
     openssl x509 -req -days "$DAYS" -in "$CERTS_DIR/${cert_name}.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial -out "$CERTS_DIR/${cert_name}.crt" -extensions v3_req -extfile "$config_file"
 
-    # Clean up temporary files
+    STEP="remove server temporary files"
     rm "$CERTS_DIR/${cert_name}.csr" "$config_file"
 
     echo "Server certificate generated successfully!"
@@ -321,6 +366,7 @@ EOF
 }
 
 # Copy CA certificate to Caddy trusted path (will be mounted in Docker)
+STEP="copy CA certificate to ca-trusted.crt"
 cp "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca-trusted.crt"
 
 # Generate server certificate with specified domains
@@ -364,22 +410,22 @@ if [ "$SERVER_ONLY" = true ]; then
     exit 0
 fi
 
-# Generate client private key
+STEP="generate client key"
 openssl genrsa -out "$CERTS_DIR/${CLIENT_NAME}.key" "$KEY_SIZE"
 
-# Generate client certificate signing request
+STEP="generate client certificate request"
 openssl req -new -key "$CERTS_DIR/${CLIENT_NAME}.key" -out "$CERTS_DIR/${CLIENT_NAME}.csr" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CLIENT_NAME"
 
-# Generate client certificate signed by CA
+STEP="sign client certificate"
 openssl x509 -req -days "$DAYS" -in "$CERTS_DIR/${CLIENT_NAME}.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial -out "$CERTS_DIR/${CLIENT_NAME}.crt"
 
-# Generate client certificate in PKCS#12 format for browsers
+STEP="export client PKCS#12 bundle"
 openssl pkcs12 -export -out "$CERTS_DIR/${CLIENT_NAME}.p12" -inkey "$CERTS_DIR/${CLIENT_NAME}.key" -in "$CERTS_DIR/${CLIENT_NAME}.crt" -certfile "$CERTS_DIR/ca.crt" -password pass:changeme
 
-# Clean up CSR file
+STEP="remove client request file"
 rm "$CERTS_DIR/${CLIENT_NAME}.csr"
 
-# Set appropriate permissions
+STEP="set file permissions"
 chmod 600 "$CERTS_DIR"/*.key
 chmod 644 "$CERTS_DIR"/*.crt "$CERTS_DIR"/*.p12
 
