@@ -92,3 +92,16 @@ from .subscription_and_subject_repositories import (  # noqa: E402
     SubscriptionRepository,
     SubscriptionSubjectRepository,
 )
+
+__all__ = [
+    "AttachedDataTypeRepository",
+    "DataTypeRepository",
+    "DatasetDefinitionRepository",
+    "DatasetRepository",
+    "EndpointRepository",
+    "ParticipantRepository",
+    "Repository",
+    "SubjectRepository",
+    "SubscriptionRepository",
+    "SubscriptionSubjectRepository",
+]
