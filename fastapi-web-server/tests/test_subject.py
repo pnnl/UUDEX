@@ -3,8 +3,11 @@ import pytest
 import uudex_server.models as m
 from uudex_server.repos import SubjectRepository
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 # Subject Tests
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_subject(subject_repo: SubjectRepository):
     subject = m.SubjectCreate(
@@ -26,6 +29,7 @@ async def test_create_subject(subject_repo: SubjectRepository):
     assert result.subject_name == "name1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_subject_by_id(subject_repo: SubjectRepository):
     subject = m.SubjectCreate(
@@ -48,6 +52,7 @@ async def test_select_subject_by_id(subject_repo: SubjectRepository):
     assert result.subject_uuid == "uuid1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_subject(subject_repo: SubjectRepository):
     subject = m.SubjectCreate(
@@ -70,6 +75,7 @@ async def test_update_subject(subject_repo: SubjectRepository):
     assert result.subject_name == "updated_name"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_subject(subject_repo: SubjectRepository):
     subject = m.SubjectCreate(

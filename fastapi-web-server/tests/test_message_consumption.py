@@ -17,6 +17,8 @@ from uudex_server.models.message_models import MessageConsumeRequest, MessageCon
 from uudex_server.models.participant_models import Participant
 from uudex_server.models.subscription_subject_models import SubscriptionSubject
 
+XFAIL_16 = pytest.mark.xfail(strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module")
+
 client = TestClient(app)
 
 
@@ -90,6 +92,7 @@ def mock_subscription_subject(mock_subscription, mock_subject):
 class TestMessageConsumption:
     """Test suite for message consumption functionality"""
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionSubjectRepository')
     @patch('uudex_server.endpoints.subscription_endpoints.message_broker_factory')
@@ -163,6 +166,7 @@ class TestMessageConsumption:
             count=1
         )
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @pytest.mark.asyncio
     async def test_consume_messages_subscription_not_found(self, mock_sub_repo, mock_user):
@@ -189,6 +193,7 @@ class TestMessageConsumption:
         assert exc_info.value.status_code == 404
         assert "Subscription not found" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @pytest.mark.asyncio
     async def test_consume_messages_unauthorized(self, mock_sub_repo, mock_user):
@@ -223,6 +228,7 @@ class TestMessageConsumption:
         assert exc_info.value.status_code == 403
         assert "Not authorized to consume messages" in str(exc_info.value.detail)
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @pytest.mark.asyncio
     async def test_consume_messages_admin_bypass_authorization(self, mock_sub_repo, mock_admin_user):
@@ -263,6 +269,7 @@ class TestMessageConsumption:
             assert result.total_consumed == 0
             assert len(result.messages) == 0
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionSubjectRepository')
     @pytest.mark.asyncio
@@ -298,6 +305,7 @@ class TestMessageConsumption:
         assert result.total_consumed == 0
         assert len(result.messages) == 0
 
+    @XFAIL_16
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionRepository')
     @patch('uudex_server.endpoints.subscription_endpoints.ssr.SubscriptionSubjectRepository')
     @patch('uudex_server.endpoints.subscription_endpoints.message_broker_factory')

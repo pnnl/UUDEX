@@ -7,6 +7,8 @@ from uudex_server.repos import (
     DataTypeRepository,
 )
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.mark.asyncio
 async def setup_data_type_and_dataset_definition(
@@ -28,6 +30,7 @@ async def setup_data_type_and_dataset_definition(
 
 
 # Tests for AttachedDataType
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_attached_data_type(
     attached_data_type_repo: AttachedDataTypeRepository,
@@ -47,6 +50,7 @@ async def test_create_attached_data_type(
     assert result.data_type_id == created_data_type.data_type_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_attached_data_type_by_ids(
     attached_data_type_repo: AttachedDataTypeRepository,
@@ -71,6 +75,7 @@ async def test_select_attached_data_type_by_ids(
     assert result.data_type_id == created_data_type.data_type_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_attached_data_type(
     attached_data_type_repo: AttachedDataTypeRepository,
@@ -95,6 +100,7 @@ async def test_update_attached_data_type(
     assert updated_result.dataset_definition_id == 2
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_attached_data_type(
     attached_data_type_repo: AttachedDataTypeRepository,

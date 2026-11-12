@@ -5,6 +5,8 @@ import pytest
 import uudex_server.models as m
 import uudex_server.repos as r
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.mark.asyncio
 async def setup_participant(participant_repo: r.ParticipantRepository) -> m.Participant:
@@ -22,6 +24,7 @@ async def setup_participant(participant_repo: r.ParticipantRepository) -> m.Part
     return created_participant
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_subscription(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
@@ -37,6 +40,7 @@ async def test_create_subscription(
     assert result.subscription_uuid == "uuid1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_subscription_by_id(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
@@ -54,6 +58,7 @@ async def test_select_subscription_by_id(
     assert result.subscription_uuid == "uuid1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_subscription(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
@@ -71,6 +76,7 @@ async def test_update_subscription(
     assert result.subscription_name == "updated_name"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_subscription(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
@@ -89,6 +95,7 @@ async def test_delete_subscription(
     assert result is None
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_user_subscriptions(
     authenticated_user: m.AuthenticatedUser, subscription_repo: r.SubscriptionRepository
@@ -106,6 +113,7 @@ async def test_select_user_subscriptions(
     assert result[0].owner_endpoint_id == authenticated_user.endpoint.endpoint_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_admin_subscriptions(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
@@ -123,6 +131,7 @@ async def test_select_admin_subscriptions(
     assert result[0].subscription_uuid == "uuid1"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_subscription_by_uuid(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository

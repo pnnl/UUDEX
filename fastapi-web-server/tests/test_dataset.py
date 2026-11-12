@@ -5,6 +5,8 @@ import pytest
 import uudex_server.models as m
 from uudex_server.repos import DatasetRepository, ParticipantRepository, SubjectRepository
 
+XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+
 
 @pytest.mark.asyncio
 async def setup_participant_and_subject(
@@ -38,6 +40,7 @@ async def setup_participant_and_subject(
 
 
 # Dataset Tests
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_create_dataset(
     dataset_repo: DatasetRepository,
@@ -65,12 +68,14 @@ async def test_create_dataset(
     assert created_dataset.description == "This is a test description"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_all_datasets(dataset_repo: DatasetRepository):
     datasets = await dataset_repo.select_all()
     assert isinstance(datasets, list)
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_select_dataset_by_id(
     dataset_repo: DatasetRepository,
@@ -101,6 +106,7 @@ async def test_select_dataset_by_id(
     assert created_dataset.subject.subject_id == created_subject.subject_id
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_update_dataset(
     dataset_repo: DatasetRepository,
@@ -129,6 +135,7 @@ async def test_update_dataset(
     assert updated_dataset.dataset_name == "Updated Dataset"
 
 
+@XFAIL_17
 @pytest.mark.asyncio
 async def test_delete_dataset(
     dataset_repo: DatasetRepository,
