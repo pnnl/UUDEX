@@ -21,13 +21,15 @@ services:
     memswap_limit: 512m
     pids_limit: 200
     init: true
-    # The entrypoint chowns the data directory and then drops from root to postgres.
+    # The entrypoint chowns the data directory and drops from root to postgres; on a reused
+    # volume it also needs DAC_OVERRIDE.
     cap_drop:
       - ALL
     cap_add:
       - CHOWN
       - SETUID
       - SETGID
+      - DAC_OVERRIDE
     security_opt:
       - no-new-privileges:true
     healthcheck:
