@@ -159,7 +159,7 @@ async def update_subject(
 ) -> Subject:
     """
     Update an existing subject with authorization checks.
-    
+
     Only subject owners or admins can update subjects.
     """
     repo = pr.SubjectRepository(session)
@@ -197,7 +197,7 @@ async def delete_subject(
 ) -> dict:
     """
     Delete a subject and its associated message queue infrastructure.
-    
+
     Only subject owners or admins can delete subjects.
     """
     repo = pr.SubjectRepository(session)
@@ -312,7 +312,7 @@ async def publish_messages_to_subject(
 ) -> MessagePublishResponse:
     """
     Publish messages to a subject's exchange.
-    
+
     Only subject owners or admins can publish to subjects.
     """
     # Get subject and verify authorization
@@ -409,7 +409,7 @@ async def manage_subject_queues(
 ) -> QueueManagementResponse:
     """
     Perform queue management operations on a subject.
-    
+
     Supported actions:
     - info: Get queue information
     - purge: Clear all messages from subject queues
@@ -504,7 +504,7 @@ async def bulk_subject_operations(
 ) -> BulkOperationResult:
     """
     Perform bulk operations on multiple subjects.
-    
+
     Supported operations:
     - delete: Delete multiple subjects
     - purge_queues: Purge queues for multiple subjects

@@ -34,13 +34,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
 
+# from . import kafka_mq
+from typing import Any
+
 from . import rabbit_mq
 from .base import UUDEXBrokerService
-
-# from . import kafka_mq
-
-
-from typing import Any
 
 
 def create_broker_service(url: str, **kwargs: Any) -> UUDEXBrokerService:

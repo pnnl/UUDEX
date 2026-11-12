@@ -1,26 +1,24 @@
 """
 Comprehensive tests for subject CRUD operations and queue management
 """
-import pytest
-import uuid
-from datetime import datetime
 from unittest.mock import AsyncMock, Mock, patch
 
+import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uudex_server.main import app
-from uudex_server.models import Subject, SubjectUpdate, SubjectQueueInfo, MessagePublishRequest
+from uudex_server.models import MessagePublishRequest, Subject, SubjectQueueInfo, SubjectUpdate
 from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.models.endpoint_models import EndPoint
 from uudex_server.models.subject_models import (
-    SubjectCreate,
+    BulkOperationResult,
+    BulkSubjectOperation,
     QueueManagementRequest,
     QueueManagementResponse,
+    SubjectCreate,
     SubjectWithMetrics,
-    BulkSubjectOperation,
-    BulkOperationResult
 )
 
 XFAIL_16 = pytest.mark.xfail(strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module")
@@ -123,16 +121,16 @@ class TestSubjectCRUD:
     async def test_get_all_subjects_admin(self, mock_repo, mock_admin_user):
         """Test getting all subjects as admin user"""
         from uudex_server.endpoints.subject_endpoints import get_all_subjects
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_repo_instance = Mock()
         mock_repo_instance.select_all = AsyncMock(return_value=[])
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await get_all_subjects(session=mock_session, user=mock_admin_user)
-        
+
         # Assertions
         assert result == []
         mock_repo_instance.select_all.assert_called_once()
@@ -144,16 +142,16 @@ class TestSubjectCRUD:
     async def test_get_all_subjects_regular_user(self, mock_select_all, mock_repo, mock_user):
         """Test getting subjects as regular user (filtered by participant)"""
         from uudex_server.endpoints.subject_endpoints import get_all_subjects
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_select_all.return_value = []
-        
+
         # Call endpoint
         result = await get_all_subjects(session=mock_session, user=mock_user)
-        
+
         # Assertions
         assert result == []
         mock_select_all.assert_called_once_with(session=mock_session, participant_id=1)
@@ -164,15 +162,15 @@ class TestSubjectCRUD:
     async def test_create_subject_success(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
         """Test successful subject creation"""
         from uudex_server.endpoints.subject_endpoints import create_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.create = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await create_subject(
             subject_data=mock_subject_create,
@@ -180,7 +178,7 @@ class TestSubjectCRUD:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert result == mock_subject
         mock_repo_instance.create.assert_called_once()
@@ -192,19 +190,19 @@ class TestSubjectCRUD:
     async def test_create_subject_broker_failure(self, mock_repo, mock_user, mock_subject_create, mock_subject, mock_broker_service):
         """Test subject creation with broker failure (should rollback)"""
         from uudex_server.endpoints.subject_endpoints import create_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.create = AsyncMock(return_value=mock_subject)
         mock_repo_instance.delete = AsyncMock()
         mock_repo.return_value = mock_repo_instance
-        
+
         # Make broker fail
         mock_broker_service.create_subject.side_effect = Exception("Broker error")
-        
+
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await create_subject(
@@ -213,7 +211,7 @@ class TestSubjectCRUD:
                 user=mock_user,
                 broker=mock_broker_service
             )
-        
+
         # Assertions
         assert exc_info.value.status_code == 500
         assert "Failed to create message broker infrastructure" in str(exc_info.value.detail)
@@ -225,19 +223,19 @@ class TestSubjectCRUD:
     async def test_get_subject_by_id_success(self, mock_select, mock_user, mock_subject):
         """Test getting subject by ID with proper authorization"""
         from uudex_server.endpoints.subject_endpoints import get_subject_by_id
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
         mock_select.return_value = mock_subject
-        
+
         # Call endpoint
         result = await get_subject_by_id(
             subject_id=1,
             session=mock_session,
             user=mock_user
         )
-        
+
         # Assertions
         assert result == mock_subject
 
@@ -247,11 +245,11 @@ class TestSubjectCRUD:
     async def test_get_subject_by_id_not_found(self, mock_select, mock_user):
         """Test getting non-existent subject by ID"""
         from uudex_server.endpoints.subject_endpoints import get_subject_by_id
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_select.return_value = None
-        
+
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await get_subject_by_id(
@@ -259,7 +257,7 @@ class TestSubjectCRUD:
                 session=mock_session,
                 user=mock_user
             )
-        
+
         # Assertions
         assert exc_info.value.status_code == 404
         assert "Subject not found" in str(exc_info.value.detail)
@@ -270,11 +268,11 @@ class TestSubjectCRUD:
     async def test_get_subject_by_id_unauthorized(self, mock_select, mock_user):
         """Test getting subject by ID with insufficient authorization"""
         from uudex_server.endpoints.subject_endpoints import get_subject_by_id
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         # Subject owned by different participant
         different_subject = Subject(
             subject_id=1,
@@ -292,7 +290,7 @@ class TestSubjectCRUD:
             dataset_definition_id=1
         )
         mock_select.return_value = different_subject
-        
+
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await get_subject_by_id(
@@ -300,7 +298,7 @@ class TestSubjectCRUD:
                 session=mock_session,
                 user=mock_user
             )
-        
+
         # Assertions
         assert exc_info.value.status_code == 403
         assert "Not authorized to view this subject" in str(exc_info.value.detail)
@@ -311,22 +309,22 @@ class TestSubjectCRUD:
     async def test_get_subject_by_uuid_success(self, mock_repo, mock_user, mock_subject):
         """Test getting subject by UUID"""
         from uudex_server.endpoints.subject_endpoints import get_subject_by_uuid
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await get_subject_by_uuid(
             subject_uuid="test-subject-uuid",
             session=mock_session,
             user=mock_user
         )
-        
+
         # Assertions
         assert result == mock_subject
         mock_repo_instance.select_by_field.assert_called_once_with("subject_uuid", "test-subject-uuid")
@@ -338,19 +336,19 @@ class TestSubjectCRUD:
     async def test_update_subject_success(self, mock_select, mock_repo, mock_user, mock_subject):
         """Test successful subject update"""
         from uudex_server.endpoints.subject_endpoints import update_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_select.return_value = mock_subject
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.update = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         update_data = SubjectUpdate(subject_name="updated-subject-name")
-        
+
         # Call endpoint
         result = await update_subject(
             subject_id=1,
@@ -359,7 +357,7 @@ class TestSubjectCRUD:
             user=mock_user,
             broker=Mock()
         )
-        
+
         # Assertions
         assert result == mock_subject
         mock_repo_instance.update.assert_called_once()
@@ -371,17 +369,17 @@ class TestSubjectCRUD:
     async def test_delete_subject_success(self, mock_select, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test successful subject deletion"""
         from uudex_server.endpoints.subject_endpoints import delete_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_select.return_value = mock_subject
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.delete = AsyncMock()
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await delete_subject(
             subject_id=1,
@@ -389,7 +387,7 @@ class TestSubjectCRUD:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert result["message"] == "Subject deleted successfully"
         assert result["subject_id"] == 1
@@ -410,15 +408,15 @@ class TestQueueManagement:
     async def test_get_subject_queue_info(self, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test getting queue information for a subject"""
         from uudex_server.endpoints.subject_endpoints import get_subject_queue_info
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await get_subject_queue_info(
             subject_uuid="test-subject-uuid",
@@ -426,7 +424,7 @@ class TestQueueManagement:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert isinstance(result, SubjectQueueInfo)
         assert result.subject_uuid == "test-subject-uuid"
@@ -438,17 +436,17 @@ class TestQueueManagement:
     async def test_manage_subject_queues_info_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test queue management with info action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         queue_request = QueueManagementRequest(action="info")
-        
+
         # Call endpoint
         result = await manage_subject_queues(
             subject_uuid="test-subject-uuid",
@@ -457,7 +455,7 @@ class TestQueueManagement:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert isinstance(result, QueueManagementResponse)
         assert result.success is True
@@ -469,17 +467,17 @@ class TestQueueManagement:
     async def test_manage_subject_queues_delete_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test queue management with delete action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         queue_request = QueueManagementRequest(action="delete", queue_name="test-queue")
-        
+
         # Call endpoint
         result = await manage_subject_queues(
             subject_uuid="test-subject-uuid",
@@ -488,7 +486,7 @@ class TestQueueManagement:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert isinstance(result, QueueManagementResponse)
         assert result.success is True
@@ -501,17 +499,17 @@ class TestQueueManagement:
     async def test_manage_subject_queues_unsupported_action(self, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test queue management with unsupported action"""
         from uudex_server.endpoints.subject_endpoints import manage_subject_queues
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         queue_request = QueueManagementRequest(action="invalid-action")
-        
+
         # Call endpoint - should return error response, not raise exception
         result = await manage_subject_queues(
             subject_uuid="test-subject-uuid",
@@ -520,7 +518,7 @@ class TestQueueManagement:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert isinstance(result, QueueManagementResponse)
         assert result.success is False
@@ -540,17 +538,17 @@ class TestMessagePublishing:
     async def test_publish_messages_to_subject_success(self, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test successful message publishing to subject"""
         from uudex_server.endpoints.subject_endpoints import publish_messages_to_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo.return_value = mock_repo_instance
-        
+
         publish_request = MessagePublishRequest(messages=["test message 1", "test message 2"])
-        
+
         # Call endpoint
         result = await publish_messages_to_subject(
             subject_uuid="test-subject-uuid",
@@ -559,7 +557,7 @@ class TestMessagePublishing:
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert result.published_count == 2
         assert result.subject_uuid == "test-subject-uuid"
@@ -572,15 +570,15 @@ class TestMessagePublishing:
     async def test_publish_messages_subject_not_found(self, mock_repo, mock_user):
         """Test publishing to non-existent subject"""
         from uudex_server.endpoints.subject_endpoints import publish_messages_to_subject
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=None)
         mock_repo.return_value = mock_repo_instance
-        
+
         publish_request = MessagePublishRequest(messages=["test message"])
-        
+
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await publish_messages_to_subject(
@@ -590,7 +588,7 @@ class TestMessagePublishing:
                 user=mock_user,
                 broker=Mock()
             )
-        
+
         # Assertions
         assert exc_info.value.status_code == 404
         assert "Subject not found" in str(exc_info.value.detail)
@@ -609,20 +607,20 @@ class TestBulkOperations:
     async def test_bulk_delete_subjects_success(self, mock_repo, mock_admin_user, mock_subject, mock_broker_service):
         """Test successful bulk deletion of subjects"""
         from uudex_server.endpoints.subject_endpoints import bulk_subject_operations
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_by_field = AsyncMock(return_value=mock_subject)
         mock_repo_instance.delete = AsyncMock()
         mock_repo.return_value = mock_repo_instance
-        
+
         bulk_request = BulkSubjectOperation(
             subject_uuids=["uuid1", "uuid2"],
             operation="delete"
         )
-        
+
         # Call endpoint
         result = await bulk_subject_operations(
             bulk_request=bulk_request,
@@ -630,7 +628,7 @@ class TestBulkOperations:
             user=mock_admin_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert isinstance(result, BulkOperationResult)
         assert len(result.successful) == 2
@@ -643,14 +641,14 @@ class TestBulkOperations:
     async def test_bulk_operations_non_admin_user(self, mock_repo, mock_user):
         """Test bulk operations with non-admin user (should fail)"""
         from uudex_server.endpoints.subject_endpoints import bulk_subject_operations
-        
+
         mock_session = Mock(spec=AsyncSession)
-        
+
         bulk_request = BulkSubjectOperation(
             subject_uuids=["uuid1"],
             operation="delete"
         )
-        
+
         # Call endpoint should raise exception
         with pytest.raises(HTTPException) as exc_info:
             await bulk_subject_operations(
@@ -659,7 +657,7 @@ class TestBulkOperations:
                 user=mock_user,
                 broker=Mock()
             )
-        
+
         # Assertions
         assert exc_info.value.status_code == 403
         assert "Only administrators can perform bulk operations" in str(exc_info.value.detail)
@@ -679,22 +677,22 @@ class TestAdvancedFeatures:
     async def test_get_subjects_with_metrics(self, mock_select_all, mock_repo, mock_user, mock_subject, mock_broker_service):
         """Test getting subjects with metrics"""
         from uudex_server.endpoints.subject_endpoints import get_subjects_with_metrics
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         # Make subject have empty subscription_links to avoid AttributeError
         mock_subject.subscription_links = []
         mock_select_all.return_value = [mock_subject]
-        
+
         # Call endpoint
         result = await get_subjects_with_metrics(
             session=mock_session,
             user=mock_user,
             broker=mock_broker_service
         )
-        
+
         # Assertions
         assert len(result) == 1
         assert isinstance(result[0], SubjectWithMetrics)
@@ -707,17 +705,17 @@ class TestAdvancedFeatures:
     async def test_discover_subjects_admin_user(self, mock_repo, mock_admin_user):
         """Test discover subjects as admin user"""
         from uudex_server.endpoints.subject_endpoints import discover_subjects
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
-        
+
         mock_repo_instance = Mock()
         mock_repo_instance.select_all = AsyncMock(return_value=[])
         mock_repo.return_value = mock_repo_instance
-        
+
         # Call endpoint
         result = await discover_subjects(session=mock_session, user=mock_admin_user)
-        
+
         # Assertions
         assert result == []
         mock_repo_instance.select_all.assert_called_once()
@@ -728,16 +726,16 @@ class TestAdvancedFeatures:
     async def test_discover_subjects_regular_user(self, mock_select_all, mock_user):
         """Test discover subjects as regular user"""
         from uudex_server.endpoints.subject_endpoints import discover_subjects
-        
+
         # Setup mocks
         mock_session = Mock(spec=AsyncSession)
         mock_session.merge = AsyncMock(return_value=mock_user.endpoint)
-        
+
         mock_select_all.return_value = []
-        
+
         # Call endpoint
         result = await discover_subjects(session=mock_session, user=mock_user)
-        
+
         # Assertions
         assert result == []
         mock_select_all.assert_called_once_with(session=mock_session, participant_id=1)
@@ -786,7 +784,7 @@ class TestValidation:
 
         # Request with queue name
         queue_request_with_name = QueueManagementRequest(
-            action="delete", 
+            action="delete",
             queue_name="test-queue"
         )
         assert queue_request_with_name.queue_name == "test-queue"

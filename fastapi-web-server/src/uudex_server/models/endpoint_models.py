@@ -1,5 +1,5 @@
 from __future__ import annotations
-import uuid
+
 from datetime import datetime
 
 from pydantic import BaseModel as PydanticBaseModel
@@ -38,7 +38,7 @@ class EndPointCreate(EndPointBase):
     """Model for creating a new endpoint/certificate"""
     # Make UUID optional for auto-generation
     endpoint_uuid: str | None = None
-    
+
 
 class EndPointUpdate(PydanticBaseModel):
     """Model for updating an existing endpoint"""

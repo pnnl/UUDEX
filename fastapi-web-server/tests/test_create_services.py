@@ -17,7 +17,7 @@ def test_load_config():
     assert my_dict
     assert isinstance(my_dict, BeneDict)
 
-    assert True == my_dict.DEV
+    assert my_dict.DEV == True
     assert my_dict.X_SSL_CERT is not None
 
 
