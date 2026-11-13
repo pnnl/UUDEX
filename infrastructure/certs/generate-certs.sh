@@ -45,7 +45,10 @@ prepare_certs_dir() {
         exit 1
     fi
     local mode
-    mode=$(ls -ldL "$CERTS_DIR")
+    mode=$(ls -ldL "$CERTS_DIR") || {
+        echo "Error: cannot read the permissions of output folder $CERTS_DIR" >&2
+        exit 1
+    }
     if [ ! -w "$CERTS_DIR" ] || [ ! -x "$CERTS_DIR" ]; then
         echo "Error: output folder $CERTS_DIR is not writable by you; fix its permissions or choose another" >&2
         exit 1
@@ -56,11 +59,15 @@ prepare_certs_dir() {
     fi
 }
 
-# A value option needs a following value that is not itself an option.
+# A value option needs a following value that is not blank and not itself an option.
 need_value() {
     local opt="$1" argc="$2" value="$3"
     if [ "$argc" -lt 2 ] || [ -z "$value" ]; then
         echo "Error: $opt requires a value" >&2
+        exit 1
+    fi
+    if [[ "$value" =~ ^[[:space:]]+$ ]]; then
+        echo "Error: $opt requires a value that is not blank" >&2
         exit 1
     fi
     if [[ "$value" == -* ]]; then
@@ -69,14 +76,21 @@ need_value() {
     fi
 }
 
+KEY_SIZE_MIN=2048
+KEY_SIZE_MAX=16384
+
 # Checked before any file is written: openssl accepts some bad values and
-# fails on others, and the failure used to be reported as success.
+# fails on others, and the failure used to be reported as success. Digits are
+# spelled out because [0-9] also matches full-width digits in some UTF-8
+# locales, which then pass the pattern and break the arithmetic test.
 validate_numbers() {
-    if ! [[ "$KEY_SIZE" =~ ^[1-9][0-9]{3,4}$ ]] || [ "$KEY_SIZE" -lt 2048 ]; then
-        echo "Error: --key-size must be a whole number of 2048 or more, got '$KEY_SIZE'" >&2
+    local digit='[0123456789]' lead='[123456789]'
+    local key_re="^$lead$digit{3,4}\$" days_re="^$lead$digit{0,5}\$"
+    if ! [[ "$KEY_SIZE" =~ $key_re ]] || [ "$KEY_SIZE" -lt "$KEY_SIZE_MIN" ] || [ "$KEY_SIZE" -gt "$KEY_SIZE_MAX" ]; then
+        echo "Error: --key-size must be a whole number from $KEY_SIZE_MIN to $KEY_SIZE_MAX, got '$KEY_SIZE'" >&2
         exit 1
     fi
-    if ! [[ "$DAYS" =~ ^[1-9][0-9]{0,5}$ ]]; then
+    if ! [[ "$DAYS" =~ $days_re ]]; then
         echo "Error: --days must be a whole number from 1 to 999999, got '$DAYS'" >&2
         exit 1
     fi
@@ -125,13 +139,13 @@ show_help() {
 # Function to list certificates
 list_certificates() {
     STEP="list certificates"
+    if [ ! -d "$CERTS_DIR" ]; then
+        echo "Error: directory does not exist: $CERTS_DIR" >&2
+        exit 1
+    fi
+
     echo "Certificates in directory: $CERTS_DIR"
     echo "=================================================="
-
-    if [ ! -d "$CERTS_DIR" ]; then
-        echo "Directory does not exist: $CERTS_DIR"
-        return 1
-    fi
 
     local found_certs=false
 
@@ -286,11 +300,14 @@ else
     fi
 fi
 
+STEP="validate numbers"
 validate_numbers
+STEP="prepare output folder"
 prepare_certs_dir
 
 # Generate CA only if it doesn't exist
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
+    STEP="print progress"
     echo "Generating new CA certificate..."
 
     STEP="generate CA key"
@@ -299,8 +316,10 @@ if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
     STEP="generate CA certificate"
     openssl req -new -x509 -days "$DAYS" -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=LocalCA"
 
+    STEP="print progress"
     echo "CA certificate generated successfully!"
 else
+    STEP="print progress"
     echo "Using existing CA certificate..."
 fi
 
@@ -315,6 +334,7 @@ generate_server_certificate() {
         cert_name="localhost"
     fi
 
+    STEP="print progress"
     echo "Generating server certificate for domains: ${domains[*]}"
 
     STEP="generate server key"
@@ -359,6 +379,7 @@ EOF
     STEP="remove server temporary files"
     rm "$CERTS_DIR/${cert_name}.csr" "$config_file"
 
+    STEP="print summary"
     echo "Server certificate generated successfully!"
     echo "  Certificate: $CERTS_DIR/${cert_name}.crt"
     echo "  Private Key: $CERTS_DIR/${cert_name}.key"
@@ -389,6 +410,7 @@ fi
 
 # If server-only mode, exit here without generating client certificate
 if [ "$SERVER_ONLY" = true ]; then
+    STEP="print summary"
     echo ""
     echo "Server certificate generation completed!"
     echo "CA Certificate: $CERTS_DIR/ca.crt"
@@ -429,6 +451,7 @@ STEP="set file permissions"
 chmod 600 "$CERTS_DIR"/*.key
 chmod 644 "$CERTS_DIR"/*.crt "$CERTS_DIR"/*.p12
 
+STEP="print summary"
 echo "Client certificate generated successfully!"
 echo "CA Certificate: $CERTS_DIR/ca.crt"
 echo "Server Certificate: $CERTS_DIR/${SERVER_CERT_NAME}.crt"

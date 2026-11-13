@@ -251,41 +251,133 @@ assert_refused_without_files() {
     [ -z "$(ls -A "$dir" 2>/dev/null)" ]
 }
 
-@test "generate-certs.sh --key-size 0 fails with a message and writes no key" {
-    cd "$WORKDIR"
-    run timeout 5 "$GEN_SCRIPT" alice -k 0 -o "$BATS_TEST_TMPDIR/ks0"
-    assert_refused_without_files "$BATS_TEST_TMPDIR/ks0" "--key-size"
+# Replaces openssl with a stub that always fails. A run that reaches it has
+# passed every argument check, so the check is observable without key generation.
+fake_openssl_failing() {
+    FAKEBIN="$BATS_TEST_TMPDIR/fakebin"
+    mkdir -p "$FAKEBIN"
+    printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/openssl"
+    chmod +x "$FAKEBIN/openssl"
 }
 
-@test "generate-certs.sh rejects key sizes below 2048 and non-numbers" {
+assert_passed_argument_checks() {
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"step failed: generate CA key"* ]]
+}
+
+@test "generate-certs.sh rejects key sizes outside 2048 to 16384 and non-numbers, stating the range" {
     cd "$WORKDIR"
-    for v in 1024 2047 abc 20.48; do
-        run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/kv$v"
-        assert_refused_without_files "$BATS_TEST_TMPDIR/kv$v" "--key-size"
+    fake_openssl_failing
+    local i=0 v
+    for v in 0 1024 2047 16385 20000 99999 100000 abc 20.48; do
+        i=$((i + 1))
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/kv$i"
+        echo "key size $v: $output"
+        assert_refused_without_files "$BATS_TEST_TMPDIR/kv$i" "--key-size"
+        [[ "$output" == *"2048 to 16384"* ]]
     done
 }
 
-@test "generate-certs.sh rejects --days that is zero, negative or not a number" {
+@test "generate-certs.sh accepts the key size limits 2048 and 16384" {
     cd "$WORKDIR"
-    for v in 0 abc 1.5 -5; do
-        run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/d$v"
-        [ "$status" -ne 0 ] || { echo "accepted days $v"; return 1; }
-        [[ "$output" != *"successfully"* ]]
-        [ ! -e "$BATS_TEST_TMPDIR/d$v/ca.key" ]
+    fake_openssl_failing
+    local v
+    for v in 2048 16384; do
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/ok$v"
+        echo "limit $v: $output"
+        assert_passed_argument_checks
     done
-    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d abc -o "$BATS_TEST_TMPDIR/dabc2"
-    assert_refused_without_files "$BATS_TEST_TMPDIR/dabc2" "--days"
 }
 
-@test "generate-certs.sh stops with a named step when openssl fails" {
+@test "generate-certs.sh rejects --days outside 1 to 999999 and non-numbers, stating the range" {
     cd "$WORKDIR"
-    mkdir -p "$BATS_TEST_TMPDIR/fakebin"
-    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/fakebin/openssl"
-    chmod +x "$BATS_TEST_TMPDIR/fakebin/openssl"
-    PATH="$BATS_TEST_TMPDIR/fakebin:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/failing"
+    fake_openssl_failing
+    local i=0 v
+    for v in 0 1000000 9999999 abc 1.5; do
+        i=$((i + 1))
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/d$i"
+        echo "days $v: $output"
+        assert_refused_without_files "$BATS_TEST_TMPDIR/d$i" "--days"
+        [[ "$output" == *"1 to 999999"* ]]
+    done
+}
+
+@test "generate-certs.sh accepts the --days limits 1 and 999999" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local v
+    for v in 1 999999; do
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/ok$v"
+        echo "limit $v: $output"
+        assert_passed_argument_checks
+    done
+}
+
+@test "generate-certs.sh refuses full-width digits for --key-size and --days under a UTF-8 locale" {
+    locale -a | /usr/bin/grep -qix 'en_US.utf-\?8' || skip "en_US.UTF-8 locale is not installed"
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local wide_key wide_days
+    wide_key=$(printf '\357\274\222\357\274\220\357\274\224\357\274\230')
+    wide_days=$(printf '\357\274\223')
+    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$wide_key" -o "$BATS_TEST_TMPDIR/wk"
+    assert_refused_without_files "$BATS_TEST_TMPDIR/wk" "--key-size"
+    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$wide_days" -o "$BATS_TEST_TMPDIR/wd"
+    assert_refused_without_files "$BATS_TEST_TMPDIR/wd" "--days"
+}
+
+@test "generate-certs.sh stops with a named step when openssl fails and leaves no files" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/failing"
     [ "$status" -ne 0 ]
     [[ "$output" == *"step failed: generate CA key"* ]]
     [[ "$output" != *"successfully"* ]]
+    [ -z "$(ls -A "$BATS_TEST_TMPDIR/failing")" ]
+}
+
+@test "generate-certs.sh names the server key step, once, when only that openssl call fails" {
+    cd "$WORKDIR"
+    local real_openssl
+    real_openssl=$(command -v openssl)
+    mkdir -p "$BATS_TEST_TMPDIR/selective"
+    printf '#!/bin/sh\ncase "$*" in *localhost.key*) exit 1 ;; esac\nexec %s "$@"\n' "$real_openssl" > "$BATS_TEST_TMPDIR/selective/openssl"
+    chmod +x "$BATS_TEST_TMPDIR/selective/openssl"
+    PATH="$BATS_TEST_TMPDIR/selective:$PATH" run --separate-stderr timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/srv"
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"step failed: generate server key"* ]]
+    [ "$(printf '%s\n' "$stderr" | /usr/bin/grep -c 'step failed')" -eq 1 ]
+    [[ "$output" != *"Server certificate generated"* ]]
+}
+
+@test "generate-certs.sh reports a failed progress message under its own step, not 'starting up'" {
+    [ -w /dev/full ] || skip "/dev/full is not available"
+    cd "$WORKDIR"
+    run bash -c '"$0" alice -k 2048 -o "$1" 2>&1 >/dev/full' "$GEN_SCRIPT" "$BATS_TEST_TMPDIR/full"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"step failed: print progress"* ]]
+    [[ "$output" != *"starting up"* ]]
+}
+
+@test "generate-certs.sh reports one error when the folder permissions cannot be read" {
+    cd "$WORKDIR"
+    mkdir -p "$BATS_TEST_TMPDIR/faills"
+    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/faills/ls"
+    chmod +x "$BATS_TEST_TMPDIR/faills/ls"
+    PATH="$BATS_TEST_TMPDIR/faills:$PATH" run --separate-stderr timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/lsdir"
+    [ "$status" -ne 0 ]
+    [[ "$stderr" == *"$BATS_TEST_TMPDIR/lsdir"* ]]
+    [ "$(printf '%s\n' "$stderr" | /usr/bin/grep -c .)" -eq 1 ]
+}
+
+@test "generate-certs.sh --list on a missing folder exits 1 with the reason on stderr and no step failure" {
+    cd "$WORKDIR"
+    run --separate-stderr timeout 5 "$GEN_SCRIPT" --list -o "$BATS_TEST_TMPDIR/nothere"
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"does not exist"* ]]
+    [[ "$stderr" != *"step failed"* ]]
+    [[ "$output" != *"step failed"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/nothere" ]
 }
 
 @test "generate-certs.sh refuses an existing owned folder it cannot write, naming it" {
@@ -323,4 +415,23 @@ assert_refused_without_files() {
     [ "$status" -ne 0 ]
     [[ "$output" == *"-s requires a value"* ]]
     [ ! -e "$BATS_TEST_TMPDIR/empty" ]
+    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d -5 -o "$BATS_TEST_TMPDIR/negdays"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"-d requires a value, got the option-like '-5'"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/negdays" ]
+}
+
+@test "generate-certs.sh refuses a blank value for each value option and writes nothing" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local opt blank
+    for opt in --domain -c -s -l -d -k -o; do
+        for blank in " " "   " "$(printf '\t')"; do
+            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$opt" "$blank"
+            [ "$status" -ne 0 ] || { echo "$opt accepted a blank value"; return 1; }
+            [[ "$output" == *"$opt requires a value"* ]] || { echo "$opt: $output"; return 1; }
+            [[ "$output" != *"step failed"* ]] || { echo "$opt: $output"; return 1; }
+        done
+    done
+    [ -z "$(ls -A "$WORKDIR")" ]
 }
