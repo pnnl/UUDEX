@@ -16,12 +16,15 @@ DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="\$HOME/.config/uudex/tls"
-DEFAULT_CONFIG_FILE="\$HOME/.config/uudex/certs.conf"
+DEFAULT_CERTS_REL=".config/uudex/tls"
+DEFAULT_CONFIG_REL=".config/uudex/certs.conf"
+DEFAULT_CERTS_DIR="\$HOME/$DEFAULT_CERTS_REL"
+DEFAULT_CONFIG_FILE="\$HOME/$DEFAULT_CONFIG_REL"
 
-# Output directory: -o, then UUDEX_CERTS, then OUTPUT_DIR in the config, then ~/.config/uudex/tls. Keys must
-# never land in a working tree, so there is no relative default. An empty value
-# is resolved after argument parsing, so --help and -o work without HOME.
+# Output directory: -o, then UUDEX_CERTS, then OUTPUT_DIR in the config, then
+# the home-based default. Keys must never land in a working tree, so there is
+# no relative default. An empty value is resolved after argument parsing, so
+# --help and -o work without HOME.
 CERTS_DIR="${UUDEX_CERTS:-}"
 
 resolve_certs_dir() {
@@ -33,7 +36,7 @@ resolve_certs_dir() {
             echo "Error: HOME is not set; set UUDEX_CERTS or pass --output-dir" >&2
             exit 1
         fi
-        CERTS_DIR="$HOME/.config/uudex/tls"
+        CERTS_DIR="$HOME/$DEFAULT_CERTS_REL"
     fi
 }
 
@@ -118,9 +121,85 @@ check_days() {
     fi
 }
 
-CONFIG_FILE="${UUDEX_CERTS_CONF:-}"
+# These values are placed in an openssl -subj string and in a generated openssl
+# config. In -subj, / starts a field, \ escapes and + makes a multi-valued
+# name; in the config, # starts a comment, $ expands, quotes group and \
+# escapes. Each would make the CA, server and client subjects differ or add
+# fields. = , ; & % : @ [ ] pass through unchanged and are allowed.
+check_subject_value() {
+    local label="$1" value="$2"
+    local bad_re='[/\#$"'"'"'+[:cntrl:]]'
+    if [[ "$value" =~ $bad_re ]]; then
+        if [[ "${BASH_REMATCH[0]}" == [[:cntrl:]] ]]; then
+            echo "Error: $label contains a control character, which openssl would misread in a certificate subject" >&2
+        else
+            echo "Error: $label contains the character '${BASH_REMATCH[0]}', which openssl would misread in a certificate subject" >&2
+        fi
+        exit 1
+    fi
+}
+
+IPV4_RE='^[0123456789]{1,3}(\.[0123456789]{1,3}){3}$'
+
+# Each field is 1 to 4 hex digits; "::" stands for one or more zero fields and
+# may appear once. Dotted-quad tails are not accepted.
+is_ipv6() {
+    local v="$1" head tail group count
+    local -a fields=() tail_fields=()
+    [[ "$v" =~ ^[0123456789abcdefABCDEF:]+$ ]] || return 1
+    [[ "$v" == *:::* || "$v" == *::*::* ]] && return 1
+    [[ "$v" == :* && "$v" != ::* ]] && return 1
+    [[ "$v" == *: && "$v" != *:: ]] && return 1
+    if [[ "$v" == *::* ]]; then
+        head="${v%%::*}"
+        tail="${v#*::}"
+        IFS=: read -ra fields <<< "$head"
+        IFS=: read -ra tail_fields <<< "$tail"
+        fields+=("${tail_fields[@]+"${tail_fields[@]}"}")
+        count=${#fields[@]}
+        [ "$count" -le 7 ] || return 1
+    else
+        IFS=: read -ra fields <<< "$v"
+        count=${#fields[@]}
+        [ "$count" -eq 8 ] || return 1
+    fi
+    for group in "${fields[@]+"${fields[@]}"}"; do
+        [[ "$group" =~ ^[0123456789abcdefABCDEF]{1,4}$ ]] || return 1
+    done
+}
+
+# A server name must be a DNS name, a dotted IPv4 address or an IPv6 address.
+# It is written into the server request config as CN and a SAN entry, so the
+# allowed characters are listed rather than the bad ones.
+check_domain() {
+    local label="$1" value="$2" octet
+    local dns_re='^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*_.-]+$'
+    if [[ "$value" == *:* ]]; then
+        is_ipv6 "$value" || {
+            echo "Error: $label '$value' is not a valid IPv6 address" >&2
+            exit 1
+        }
+        return 0
+    fi
+    if ! [[ "$value" =~ $dns_re ]]; then
+        echo "Error: $label '$value' is not a DNS name or IP address (letters, digits, '.', '-', '_' and '*' only)" >&2
+        exit 1
+    fi
+    if [[ "$value" =~ $IPV4_RE ]]; then
+        local -a octets
+        IFS=. read -ra octets <<< "$value"
+        for octet in "${octets[@]}"; do
+            if [[ "$octet" =~ ^0[0123456789] ]] || [ "$octet" -gt 255 ]; then
+                echo "Error: $label '$value' is not a valid IPv4 address (octets are 0 to 255 without leading zeros)" >&2
+                exit 1
+            fi
+        done
+    fi
+}
+
+CONFIG_FILE=""
 CFG_COUNTRY="" CFG_STATE="" CFG_CITY="" CFG_ORG="" CFG_CA_NAME=""
-CFG_KEY_SIZE="" CFG_KEY_SIZE_SRC="" CFG_DAYS="" CFG_DAYS_SRC="" CFG_OUTPUT_DIR=""
+CFG_KEY_SIZE="" CFG_DAYS="" CFG_OUTPUT_DIR=""
 CFG_DOMAINS=()
 
 config_fail() {
@@ -164,26 +243,25 @@ parse_config() {
         seen="$seen$key "
         check_value "$label" "$value"
         case "$key" in
-            C) CFG_COUNTRY="$value" ;;
-            ST) CFG_STATE="$value" ;;
-            L) CFG_CITY="$value" ;;
-            O) CFG_ORG="$value" ;;
-            CA_CN) CFG_CA_NAME="$value" ;;
+            C) check_subject_value "$label" "$value"; CFG_COUNTRY="$value" ;;
+            ST) check_subject_value "$label" "$value"; CFG_STATE="$value" ;;
+            L) check_subject_value "$label" "$value"; CFG_CITY="$value" ;;
+            O) check_subject_value "$label" "$value"; CFG_ORG="$value" ;;
+            CA_CN) check_subject_value "$label" "$value"; CFG_CA_NAME="$value" ;;
             KEY_SIZE)
                 check_key_size "$label" "$value"
                 CFG_KEY_SIZE="$value"
-                CFG_KEY_SIZE_SRC="$label"
                 ;;
             DAYS)
                 check_days "$label" "$value"
                 CFG_DAYS="$value"
-                CFG_DAYS_SRC="$label"
                 ;;
             DOMAINS)
                 rest="$value"
                 while :; do
                     item=$(trim "${rest%%,*}")
                     check_value "$label" "$item"
+                    check_domain "$label" "$item"
                     CFG_DOMAINS+=("$item")
                     [[ "$rest" == *,* ]] || break
                     rest="${rest#*,}"
@@ -205,17 +283,22 @@ parse_config() {
     done < "$CONFIG_FILE"
 }
 
-# An explicit path (--config or UUDEX_CERTS_CONF) must exist. The default path
-# may be absent, but a default that exists and cannot be used is an error. A
-# config others can write could redirect the output folder or the domains.
+# An explicit path (--config or UUDEX_CERTS_CONF) must exist; an empty
+# UUDEX_CERTS_CONF is refused rather than read as unset. The default path may be
+# absent, but a default that exists and cannot be used is an error. A config
+# others can write could redirect the output folder or the domains.
 load_config() {
     local explicit=true mode
+    if [ -z "$CONFIG_FILE" ] && [ "${UUDEX_CERTS_CONF+set}" = set ]; then
+        check_value "UUDEX_CERTS_CONF" "$UUDEX_CERTS_CONF"
+        CONFIG_FILE="$UUDEX_CERTS_CONF"
+    fi
     if [ -z "$CONFIG_FILE" ]; then
         explicit=false
         if [ -z "${HOME:-}" ]; then
             return 0
         fi
-        CONFIG_FILE="$HOME/.config/uudex/certs.conf"
+        CONFIG_FILE="$HOME/$DEFAULT_CONFIG_REL"
         if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
             return 0
         fi
@@ -254,7 +337,7 @@ show_help() {
     echo "  -l, --city CITY     City or locality (default: $DEFAULT_CITY)"
     echo "  -d, --days DAYS     Certificate validity in days (default: $DEFAULT_DAYS)"
     echo "  -k, --key-size SIZE RSA key size in bits (default: $DEFAULT_KEY_SIZE)"
-    echo "  -o, --output-dir DIR Output directory for certificates (overrides UUDEX_CERTS)"
+    echo "  -o, --output-dir DIR Output directory for certificates (overrides UUDEX_CERTS and OUTPUT_DIR)"
     echo "  --org ORG           Organization name (same as the ORG argument)"
     echo "  --ca-name NAME      CA common name (default: $DEFAULT_CA_NAME)"
     echo "  --config FILE       Read defaults from FILE (default: $DEFAULT_CONFIG_FILE, if it exists)"
@@ -264,10 +347,11 @@ show_help() {
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  UUDEX_CERTS         Override certificate output directory (default: $DEFAULT_CERTS_DIR)"
+    echo "  UUDEX_CERTS         Override certificate output directory (overrides OUTPUT_DIR; default: $DEFAULT_CERTS_DIR)"
     echo "  UUDEX_CERTS_CONF    Config file to read instead of $DEFAULT_CONFIG_FILE"
     echo ""
     echo "Config file: KEY = VALUE lines; keys C ST L O CA_CN KEY_SIZE DAYS DOMAINS OUTPUT_DIR."
+    echo "  OUTPUT_DIR sets the output directory when -o and UUDEX_CERTS are not given."
     echo "See uudex-certs.conf.example next to this script."
     echo ""
     echo "Examples:"
@@ -337,9 +421,7 @@ STATE=""
 CITY=""
 CA_NAME=""
 DAYS=""
-DAYS_SRC="--days"
 KEY_SIZE=""
-KEY_SIZE_SRC="--key-size"
 LIST_CERTS=false
 SERVER_ONLY=false
 DOMAINS=()  # Array to store multiple domains
@@ -382,13 +464,11 @@ while [[ $# -gt 0 ]]; do
         -d|--days)
             need_value "$1" "$#" "${2-}"
             DAYS="$2"
-            DAYS_SRC="--days"
             shift 2
             ;;
         -k|--key-size)
             need_value "$1" "$#" "${2-}"
             KEY_SIZE="$2"
-            KEY_SIZE_SRC="--key-size"
             shift 2
             ;;
         --org)
@@ -431,6 +511,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Every value from the command line is checked before any file is read or written.
+check_subject_value "--country" "$COUNTRY"
+check_subject_value "--state" "$STATE"
+check_subject_value "--city" "$CITY"
+check_subject_value "ORG (second argument or --org)" "$ORG"
+check_subject_value "--ca-name" "$CA_NAME"
+check_subject_value "CLIENT_NAME" "$CLIENT_NAME"
+for domain in "${DOMAINS[@]+"${DOMAINS[@]}"}"; do
+    check_domain "--domain" "$domain"
+done
+
 load_config
 resolve_certs_dir
 
@@ -447,22 +538,8 @@ apply_config_and_defaults() {
     : "${CITY:=${CFG_CITY:-$DEFAULT_CITY}}"
     : "${ORG:=${CFG_ORG:-$DEFAULT_ORG}}"
     : "${CA_NAME:=${CFG_CA_NAME:-$DEFAULT_CA_NAME}}"
-    if [ -z "$KEY_SIZE" ]; then
-        if [ -n "$CFG_KEY_SIZE" ]; then
-            KEY_SIZE="$CFG_KEY_SIZE"
-            KEY_SIZE_SRC="$CFG_KEY_SIZE_SRC"
-        else
-            KEY_SIZE="$DEFAULT_KEY_SIZE"
-        fi
-    fi
-    if [ -z "$DAYS" ]; then
-        if [ -n "$CFG_DAYS" ]; then
-            DAYS="$CFG_DAYS"
-            DAYS_SRC="$CFG_DAYS_SRC"
-        else
-            DAYS="$DEFAULT_DAYS"
-        fi
-    fi
+    : "${KEY_SIZE:=${CFG_KEY_SIZE:-$DEFAULT_KEY_SIZE}}"
+    : "${DAYS:=${CFG_DAYS:-$DEFAULT_DAYS}}"
     if [ ${#DOMAINS[@]} -eq 0 ] && [ ${#CFG_DOMAINS[@]} -gt 0 ]; then
         DOMAINS=("${CFG_DOMAINS[@]}")
     fi
@@ -496,12 +573,13 @@ else
 fi
 
 STEP="validate numbers"
-check_key_size "$KEY_SIZE_SRC" "$KEY_SIZE"
-check_days "$DAYS_SRC" "$DAYS"
+check_key_size "--key-size" "$KEY_SIZE"
+check_days "--days" "$DAYS"
 STEP="prepare output folder"
 prepare_certs_dir
 
 # Generate CA only if it doesn't exist
+CA_REUSED=false
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
     STEP="print progress"
     echo "Generating new CA certificate..."
@@ -517,6 +595,21 @@ if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
 else
     STEP="print progress"
     echo "Using existing CA certificate..."
+    CA_REUSED=true
+fi
+
+# The CA subject printed below is read back from ca.crt: an existing CA is
+# kept as it is, so the requested values may not be the ones in use.
+STEP="read CA subject"
+CA_SUBJECT_OPTS="sep_comma_plus_space,dn_rev,sname,utf8"
+CA_SUBJECT=$(openssl x509 -in "$CERTS_DIR/ca.crt" -noout -subject -nameopt "$CA_SUBJECT_OPTS") || {
+    echo "Error: cannot read the subject of $CERTS_DIR/ca.crt" >&2
+    exit 1
+}
+CA_SUBJECT="${CA_SUBJECT#subject=}"
+CA_REQUESTED="CN=$CA_NAME, O=$ORG, L=$CITY, ST=$STATE, C=$COUNTRY"
+if [ "$CA_REUSED" = true ] && [ "$CA_SUBJECT" != "$CA_REQUESTED" ]; then
+    echo "Warning: the existing CA at $CERTS_DIR/ca.crt has subject '$CA_SUBJECT', not the requested '$CA_REQUESTED'; the existing CA is kept" >&2
 fi
 
 # Function to generate server certificate with multiple domains
@@ -562,9 +655,8 @@ EOF
     # Add all domains as alternative names
     # An IP address in a DNS entry never matches a client that connects by IP.
     local dns_i=1 ip_i=1
-    local ip_re='^[0123456789]{1,3}(\.[0123456789]{1,3}){3}$'
     for domain in "${domains[@]}"; do
-        if [[ "$domain" =~ $ip_re ]]; then
+        if [[ "$domain" == *:* || "$domain" =~ $IPV4_RE ]]; then
             echo "IP.${ip_i} = $domain" >> "$config_file"
             ip_i=$((ip_i + 1))
         else
@@ -625,6 +717,7 @@ if [ "$SERVER_ONLY" = true ]; then
     echo "  State: $STATE"
     echo "  City: $CITY"
     echo "  Organization: $ORG"
+    echo "  CA subject: $CA_SUBJECT"
     echo "  Domains: ${DOMAINS[*]}"
     echo "  Valid for: $DAYS days"
     echo "  Key size: $KEY_SIZE bits"
@@ -668,6 +761,7 @@ echo "  Country: $COUNTRY"
 echo "  State: $STATE"
 echo "  City: $CITY"
 echo "  Organization: $ORG"
+echo "  CA subject: $CA_SUBJECT"
 echo "  Client Name: $CLIENT_NAME"
 echo "  Server Domains: ${DOMAINS[*]}"
 echo "  Valid for: $DAYS days"
