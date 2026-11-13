@@ -34,7 +34,8 @@ chmod 600 ~/.config/uudex/certs.conf
 
 The script reads `~/.config/uudex/certs.conf` if it exists. To use another
 file, pass `--config FILE` or set `UUDEX_CERTS_CONF`; a file named that way
-must exist. Keep the file outside the repository.
+must exist, and `--config` wins over the variable. An empty `UUDEX_CERTS_CONF`
+is refused, not read as unset. Keep the file outside the repository.
 
 Format: `KEY = VALUE`, one per line; `#` starts a comment on its own line.
 Keys: `C`, `ST`, `L`, `O`, `CA_CN`, `KEY_SIZE`, `DAYS`, `DOMAINS` (comma
@@ -42,6 +43,15 @@ separated), `OUTPUT_DIR` (absolute, or starting with `~/`). The file is parsed,
 never run. An unknown key, a malformed or repeated line, a bad number, a value
 that is blank or starts with `-`, or a file other users can write is refused
 with a message naming the file and line, before anything is written.
+
+Subject values (`C`, `ST`, `L`, `O`, `CA_CN`, and the matching options, the
+`ORG` argument and the client name) may not contain `/`, `\`, `#`, `$`, `"`,
+`'` or `+`, or a control character, because openssl reads them as syntax and
+the CA, server and client subjects would differ. `L = Richland # city` is
+refused, not stored. Server names (`DOMAINS` and `--domain`) must be DNS names
+(letters, digits, `.`, `-`, `_`, `*`), IPv4 addresses (0 to 255, no leading
+zeros) or IPv6 addresses (written with `:`, no dotted tail); an IP address
+becomes an IP entry in the certificate, not a DNS name.
 
 Precedence: command line, then config file, then built-in default. For the
 output folder it is `-o`, then `UUDEX_CERTS`, then `OUTPUT_DIR`, then
@@ -75,6 +85,10 @@ rather than adding to it. Nothing is required: the client name defaults to
 | `--config FILE` | Config file to read (overrides `UUDEX_CERTS_CONF`) |
 | `-o, --output-dir DIR` | Output folder (overrides `UUDEX_CERTS`) |
 | `-h, --help` | Show help |
+
+An existing CA is kept as it is. If the requested CA subject differs from it,
+the script prints a warning on stderr naming both subjects, and the summary
+shows the CA subject read from `ca.crt`. Replacing the CA is not supported yet.
 
 Every option that takes a value needs a value that is not blank and does not
 start with `-`. `--key-size` and `--days` accept ASCII digits only. The script
