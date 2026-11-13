@@ -40,10 +40,16 @@ export UUDEX_CERTS=/custom/cert/path
 | `-c, --country CODE` | Country code |
 | `-s, --state STATE` | State or province |
 | `-l, --city CITY` | City or locality |
-| `-d, --days DAYS` | Validity in days |
-| `-k, --key-size SIZE` | RSA key size in bits |
+| `-d, --days DAYS` | Validity in days, a whole number from 1 to 999999 |
+| `-k, --key-size SIZE` | RSA key size in bits, a whole number from 2048 to 16384 |
 | `-o, --output-dir DIR` | Output folder (overrides `UUDEX_CERTS`) |
 | `-h, --help` | Show help |
+
+Every option that takes a value needs a value that is not blank and does not
+start with `-`. `--key-size` and `--days` accept ASCII digits only. The script
+checks all arguments before it writes any file, stops at the first failure
+with a message naming the step, and exits non-zero. `--list` on a folder that
+does not exist prints the reason to stderr and exits 1.
 
 ## generate-certs-from-existing-postgres.sh
 
