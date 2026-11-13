@@ -14,4 +14,3 @@
 *.png binary
 *.jpg binary
 # Kept byte-for-byte: key material, no line-ending conversion.
-example_ssl_certs/** -text
