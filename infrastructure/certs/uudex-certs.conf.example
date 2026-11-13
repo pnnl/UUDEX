@@ -2,6 +2,7 @@
 # (or pass --config FILE) and edit it. Format: KEY = VALUE, one per line.
 # Comments start with # on a line of their own. A command-line option
 # overrides the matching value here.
+# Subject values may not contain / \ # $ " ' + (openssl reads them as syntax).
 
 # Subject fields shared by the CA, server and client certificates.
 C = US
