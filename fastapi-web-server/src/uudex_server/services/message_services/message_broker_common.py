@@ -34,7 +34,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
 
-# from uudex_server.services.message_services.kafka_mq import KafkaService
 from typing import Any
 
 from uudex_server.services.message_services.base import UUDEXBrokerService

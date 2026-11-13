@@ -66,7 +66,6 @@ if __name__ == "__main__":
     from sqlmodel import select
 
     from uudex_server.models import Participant
-    # from uudex_server.app.model import Participant
 
     settings = get_settings(".env-develop")
     session = get_db_session()
@@ -76,7 +75,4 @@ if __name__ == "__main__":
         print(rdr)
 
     # with create_session() as session:
-    #     statement = select(Participant)
-    #     results = session.exec(statement)
     #     for rdr in results:
-    #         print(rdr)

@@ -24,11 +24,7 @@ class Participant(ParticipantBase, TimeStampMixin, ActiveSwitchMixin, SQLModel, 
 
     # # Align relationships with descriptive names
     # participant_visibility_exposed_by: list["ParticipantVisibility"] = Relationship(
-    #     back_populates="exposed_by_participant"
-    # )
     # participant_visibility_exposed_to: list["ParticipantVisibility"] = Relationship(
-    #     back_populates="exposed_to_participant"
-    # )
 
 
 class ParticipantCreate(ParticipantBase):

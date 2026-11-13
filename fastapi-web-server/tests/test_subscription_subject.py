@@ -136,7 +136,6 @@ async def setup_subscription_and_subject(
         backing_exchange_name="exchange1",
         owner_participant_id=created_participant.participant_id,
         dataset_definition_id=created_dataset_definition.dataset_definition_id,
-        # dataset_definition_id=dataset.dataset_id,
     )
     created_subject = await subject_repo.create(subject_create)
 
@@ -194,9 +193,7 @@ async def test_create_subscription_subject(
 
     # Check relationships
     # assert created_subscription_subject.subscription is not None
-    # assert created_subscription_subject.subscription.subscription_name == "Test Subscription"
     # assert created_subscription_subject.subject is not None
-    # assert created_subscription_subject.subject.subject_name == "Test Subject"
 
 
 @XFAIL_17
