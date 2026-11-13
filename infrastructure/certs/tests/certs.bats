@@ -11,7 +11,7 @@ setup() {
     WORKDIR="$BATS_TEST_TMPDIR/work"
     mkdir -p "$FAKE_HOME" "$WORKDIR"
     export HOME="$FAKE_HOME"
-    unset UUDEX_CERTS DB_PASSWORD
+    unset UUDEX_CERTS UUDEX_CERTS_CONF DB_PASSWORD
 
     # psql stub: records each call and answers the three queries the script makes.
     STUB="$BATS_TEST_TMPDIR/stub"
@@ -434,4 +434,241 @@ assert_passed_argument_checks() {
         done
     done
     [ -z "$(ls -A "$WORKDIR")" ]
+}
+
+# Config file defaults. Subjects are read back from the certificates the
+# script wrote, not from its output.
+
+EXAMPLE_CONF="$SCRIPTS/uudex-certs.conf.example"
+
+subject_of() { openssl x509 -in "$1" -noout -subject -nameopt RFC2253; }
+
+write_conf() {
+    CONF="$BATS_TEST_TMPDIR/test.conf"
+    printf '%s\n' "$@" > "$CONF"
+    chmod 600 "$CONF"
+}
+
+FULL_CONF=(
+    "C = CA" "ST = Ontario" "L = Toronto" "O = Conf Org" "CA_CN = Conf CA"
+    "KEY_SIZE = 2048" "DAYS = 30" "DOMAINS = conf.example, 10.1.2.3"
+)
+
+@test "config: built-in defaults apply with no config file" {
+    cd "$WORKDIR"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -eq 0 ]
+    [ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" = "subject=CN=LocalCA,O=Organization,L=City,ST=State,C=US" ]
+}
+
+@test "config: a partial config sets its own keys and the rest stay built-in" {
+    cd "$WORKDIR"
+    write_conf "O = Partial Org"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -eq 0 ]
+    [ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" = "subject=CN=LocalCA,O=Partial Org,L=City,ST=State,C=US" ]
+}
+
+@test "config: values from the config are used when no option is given" {
+    cd "$WORKDIR"
+    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    [ "$status" -eq 0 ]
+    local d="$BATS_TEST_TMPDIR/cfgout"
+    [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
+    [ "$(subject_of "$d/ca.crt")" = "subject=CN=Conf CA,O=Conf Org,L=Toronto,ST=Ontario,C=CA" ]
+    [ "$(subject_of "$d/alice.crt")" = "subject=CN=alice,O=Conf Org,L=Toronto,ST=Ontario,C=CA" ]
+    [ "$(subject_of "$d/server.crt")" = "subject=CN=conf.example,O=Conf Org,L=Toronto,ST=Ontario,C=CA" ]
+    openssl x509 -in "$d/server.crt" -noout -ext subjectAltName | /usr/bin/grep -q 'DNS:conf.example'
+    openssl x509 -in "$d/server.crt" -noout -ext subjectAltName | /usr/bin/grep -q 'IP Address:10.1.2.3'
+    openssl x509 -in "$d/alice.crt" -noout -text | /usr/bin/grep -q 'Public-Key: (2048 bit)'
+    openssl x509 -in "$d/alice.crt" -noout -checkend $((29 * 86400))
+    run openssl x509 -in "$d/alice.crt" -noout -checkend $((31 * 86400))
+    [ "$status" -ne 0 ]
+}
+
+@test "config: the default path is read when it exists" {
+    cd "$WORKDIR"
+    mkdir -p "$FAKE_HOME/.config/uudex"
+    write_conf "O = Default Path Org"
+    cp "$CONF" "$FAKE_HOME/.config/uudex/certs.conf"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048
+    [ "$status" -eq 0 ]
+    [[ "$(subject_of "$FAKE_HOME/.config/uudex/tls/ca.crt")" == *"O=Default Path Org"* ]]
+}
+
+@test "config: UUDEX_CERTS_CONF points at another file" {
+    cd "$WORKDIR"
+    write_conf "O = Env Conf Org"
+    UUDEX_CERTS_CONF="$CONF" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -eq 0 ]
+    [[ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" == *"O=Env Conf Org"* ]]
+}
+
+@test "config: every option overrides the config value" {
+    cd "$WORKDIR"
+    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout"
+    sed -i 's/^KEY_SIZE = 2048/KEY_SIZE = 2560/' "$CONF"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -c US -s Washington -l Richland \
+        --org "Opt Org" --ca-name "Opt CA" -k 2048 -d 400 --domain opt.example -o "$BATS_TEST_TMPDIR/optout"
+    [ "$status" -eq 0 ]
+    local d="$BATS_TEST_TMPDIR/optout"
+    [ ! -e "$BATS_TEST_TMPDIR/cfgout" ]
+    [ "$(subject_of "$d/ca.crt")" = "subject=CN=Opt CA,O=Opt Org,L=Richland,ST=Washington,C=US" ]
+    [ "$(subject_of "$d/alice.crt")" = "subject=CN=alice,O=Opt Org,L=Richland,ST=Washington,C=US" ]
+    [ "$(subject_of "$d/server.crt")" = "subject=CN=opt.example,O=Opt Org,L=Richland,ST=Washington,C=US" ]
+    ! openssl x509 -in "$d/server.crt" -noout -ext subjectAltName | /usr/bin/grep -q 'conf.example'
+    openssl x509 -in "$d/alice.crt" -noout -text | /usr/bin/grep -q 'Public-Key: (2048 bit)'
+    openssl x509 -in "$d/alice.crt" -noout -checkend $((399 * 86400))
+}
+
+@test "config: UUDEX_CERTS beats OUTPUT_DIR in the config" {
+    cd "$WORKDIR"
+    write_conf "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout" "KEY_SIZE = 2048"
+    UUDEX_CERTS="$BATS_TEST_TMPDIR/envout" run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    [ "$status" -eq 0 ]
+    [ -s "$BATS_TEST_TMPDIR/envout/alice.key" ]
+    [ ! -e "$BATS_TEST_TMPDIR/cfgout" ]
+}
+
+@test "config: OUTPUT_DIR may start with ~/ and must otherwise be absolute" {
+    cd "$WORKDIR"
+    write_conf "OUTPUT_DIR = ~/from-conf" "KEY_SIZE = 2048"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    [ "$status" -eq 0 ]
+    [ -s "$FAKE_HOME/from-conf/alice.key" ]
+    write_conf "OUTPUT_DIR = relative/dir"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 1"* && "$output" == *"OUTPUT_DIR must be an absolute path"* ]]
+    [ -z "$(ls -A "$WORKDIR")" ]
+}
+
+@test "config: an unknown key is refused naming the line and the key" {
+    cd "$WORKDIR"
+    write_conf "# comment" "" "C = US" "COUNTY = Benton"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$CONF line 4: unknown key 'COUNTY'"* ]]
+    [[ "$output" != *"successfully"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+}
+
+@test "config: a malformed line, a duplicate key and CRLF endings are refused naming the line" {
+    cd "$WORKDIR"
+    write_conf "C = US" "this is not a setting"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 2: expected KEY = VALUE"* ]]
+    write_conf "C = US" "C = CA"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 2: key 'C' is set twice"* ]]
+    printf 'C = US\r\n' > "$CONF"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 1: carriage return"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+}
+
+@test "config: bad KEY_SIZE and DAYS fail with the same range message and the line, even when overridden" {
+    cd "$WORKDIR"
+    write_conf "C = US" "KEY_SIZE = 1024"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 2: KEY_SIZE must be a whole number from 2048 to 16384, got '1024'"* ]]
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 2: KEY_SIZE"* ]]
+    write_conf "DAYS = 1.5"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"line 1: DAYS must be a whole number from 1 to 999999, got '1.5'"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+}
+
+@test "config: a blank, option-like or empty-item value is refused like the option form" {
+    cd "$WORKDIR"
+    local bad
+    for bad in "ST =" "ST = -x" "DOMAINS = a.example,,b.example" "DOMAINS = a.example," "O = -"; do
+        write_conf "$bad"
+        run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+        [ "$status" -ne 0 ] || { echo "accepted: $bad"; return 1; }
+        [[ "$output" == *"line 1"* && "$output" == *"requires a value"* ]] || { echo "$bad: $output"; return 1; }
+    done
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+}
+
+@test "config: an explicit config that does not exist is refused, a missing default is fine" {
+    cd "$WORKDIR"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$BATS_TEST_TMPDIR/nothere.conf" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"nothere.conf does not exist"* ]]
+    UUDEX_CERTS_CONF="$BATS_TEST_TMPDIR/nothere.conf" run timeout 60 "$GEN_SCRIPT" alice -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"does not exist"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$FAKE_HOME/.config/uudex/certs.conf" ]
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -eq 0 ]
+}
+
+@test "config: a directory, or a file others can write, is refused and nothing is written" {
+    cd "$WORKDIR"
+    mkdir "$BATS_TEST_TMPDIR/dir.conf"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$BATS_TEST_TMPDIR/dir.conf" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is not a regular file"* ]]
+    write_conf "C = US"
+    chmod 666 "$CONF"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"writable by other users"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+}
+
+@test "config: a config that is never executed (shell syntax is a malformed line)" {
+    cd "$WORKDIR"
+    write_conf 'C=$(touch '"$BATS_TEST_TMPDIR"'/pwned)'
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
+}
+
+@test "config: with every value in the config, a client name alone makes the CA, server and client certificates" {
+    cd "$WORKDIR"
+    write_conf "${FULL_CONF[@]}"
+    cp "$CONF" "$BATS_TEST_TMPDIR/keep.conf"
+    mkdir -p "$FAKE_HOME/.config/uudex"
+    cp "$CONF" "$FAKE_HOME/.config/uudex/certs.conf"
+    run timeout 60 "$GEN_SCRIPT" alice
+    [ "$status" -eq 0 ]
+    local d="$FAKE_HOME/.config/uudex/tls"
+    for f in ca.crt ca.key server.crt server.key alice.crt alice.key alice.p12; do [ -s "$d/$f" ]; done
+    openssl verify -CAfile "$d/ca.crt" "$d/server.crt" "$d/alice.crt"
+}
+
+@test "config: the shipped example makes certificates with the values of the example certificates" {
+    cd "$WORKDIR"
+    [ -f "$EXAMPLE_CONF" ]
+    mkdir -p "$FAKE_HOME/.config/uudex"
+    cp "$EXAMPLE_CONF" "$FAKE_HOME/.config/uudex/certs.conf"
+    chmod 600 "$FAKE_HOME/.config/uudex/certs.conf"
+    run timeout 60 "$GEN_SCRIPT" alice
+    [ "$status" -eq 0 ]
+    local d="$FAKE_HOME/.config/uudex/tls"
+    [ "$(subject_of "$d/ca.crt")" = "subject=CN=UUDEX CA,O=UUDEX CA,L=Richland,ST=Washington,C=US" ]
+    openssl x509 -in "$d/localhost.crt" -noout -text 2>/dev/null | /usr/bin/grep -q 'Public-Key: (2048 bit)' \
+        || openssl x509 -in "$d/server.crt" -noout -text | /usr/bin/grep -q 'Public-Key: (2048 bit)'
+    openssl x509 -in "$d/server.crt" -noout -ext subjectAltName | /usr/bin/grep -q 'IP Address:127.0.0.1'
+    ! /usr/bin/grep -qi 'raven2' "$EXAMPLE_CONF"
+}
+
+@test "config: --list uses OUTPUT_DIR from the config" {
+    cd "$WORKDIR"
+    write_conf "OUTPUT_DIR = $BATS_TEST_TMPDIR/listdir" "KEY_SIZE = 2048"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    [ "$status" -eq 0 ]
+    run timeout 60 "$GEN_SCRIPT" --list --config "$CONF"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$BATS_TEST_TMPDIR/listdir"* && "$output" == *"Name: alice"* ]]
 }
