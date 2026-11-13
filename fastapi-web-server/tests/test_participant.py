@@ -5,7 +5,10 @@ import pytest
 from uudex_server.models import ParticipantCreate, ParticipantDelete
 from uudex_server.repos import ParticipantRepository
 
-XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+XFAIL_17 = pytest.mark.xfail(
+    strict=True,
+    reason="#17: repository fixture missing, or repository called with an unmapped Create model",
+)
 
 
 @XFAIL_17

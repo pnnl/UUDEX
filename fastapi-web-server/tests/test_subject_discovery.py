@@ -3,8 +3,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
-XFAIL_18_ADMIN = pytest.mark.xfail(strict=True, reason="#18: is_admin read on None, no authenticated user is produced")
-XFAIL_18_MESSAGE = pytest.mark.xfail(strict=True, reason="#18: discovery returns a different no-certificate message; fits no listed class")
+XFAIL_18_ADMIN = pytest.mark.xfail(
+    strict=True, reason="#18: is_admin read on None, no authenticated user is produced"
+)
+XFAIL_18_MESSAGE = pytest.mark.xfail(
+    strict=True,
+    reason="#18: discovery returns a different no-certificate message; fits no listed class",
+)
 
 
 @pytest.mark.asyncio

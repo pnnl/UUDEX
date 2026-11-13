@@ -5,7 +5,10 @@ import pytest
 import uudex_server.models as m
 from uudex_server.repos import EndpointRepository, ParticipantRepository
 
-XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+XFAIL_17 = pytest.mark.xfail(
+    strict=True,
+    reason="#17: repository fixture missing, or repository called with an unmapped Create model",
+)
 
 
 @pytest.mark.asyncio

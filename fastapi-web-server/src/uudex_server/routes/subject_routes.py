@@ -34,6 +34,7 @@ def get_broker_service() -> UUDEXBrokerService:
 # BASIC CRUD OPERATIONS
 # =====================================================
 
+
 @subjects_router.get("/", operation_id="get_all_subjects")
 async def get_all_subjects(session: SessionDep, user: UserDep) -> list[Subject]:
     """
@@ -80,7 +81,9 @@ async def create_subject(
 
     # Set backing exchange name if not provided
     if not subject_data.backing_exchange_name:
-        subject_data.backing_exchange_name = f"e_{subject_data.subject_name}_{subject_data.subject_uuid}"
+        subject_data.backing_exchange_name = (
+            f"e_{subject_data.subject_name}_{subject_data.subject_uuid}"
+        )
 
     # Create subject in database
     subject_dict = subject_data.model_dump()
@@ -92,15 +95,14 @@ async def create_subject(
     try:
         # Create message broker infrastructure
         broker.create_subject(
-            subject_name=created_subject.subject_name,
-            subject_uuid=created_subject.subject_uuid
+            subject_name=created_subject.subject_name, subject_uuid=created_subject.subject_uuid
         )
     except Exception as e:
         # If broker setup fails, remove the subject from database
         await repo.delete(created_subject.subject_id)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create message broker infrastructure: {str(e)}"
+            detail=f"Failed to create message broker infrastructure: {str(e)}",
         )
 
     return created_subject
@@ -120,8 +122,7 @@ async def get_subject_by_id(subject_id: int, session: SessionDep, user: UserDep)
         endpoint = await session.merge(user.endpoint)
         if subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to view this subject"
+                status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this subject"
             )
 
     return subject
@@ -142,8 +143,7 @@ async def get_subject_by_uuid(subject_uuid: str, session: SessionDep, user: User
         endpoint = await session.merge(user.endpoint)
         if subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to view this subject"
+                status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to view this subject"
             )
 
     return subject
@@ -159,7 +159,7 @@ async def update_subject(
 ) -> Subject:
     """
     Update an existing subject with authorization checks.
-    
+
     Only subject owners or admins can update subjects.
     """
     repo = pr.SubjectRepository(session)
@@ -174,7 +174,7 @@ async def update_subject(
         if existing_subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to update this subject"
+                detail="Not authorized to update this subject",
             )
 
     # Update only provided fields
@@ -197,7 +197,7 @@ async def delete_subject(
 ) -> dict:
     """
     Delete a subject and its associated message queue infrastructure.
-    
+
     Only subject owners or admins can delete subjects.
     """
     repo = pr.SubjectRepository(session)
@@ -212,14 +212,13 @@ async def delete_subject(
         if existing_subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to delete this subject"
+                detail="Not authorized to delete this subject",
             )
 
     try:
         # Delete message broker infrastructure first
         broker.delete_subject(
-            subject_name=existing_subject.subject_name,
-            subject_uuid=existing_subject.subject_uuid
+            subject_name=existing_subject.subject_name, subject_uuid=existing_subject.subject_uuid
         )
     except Exception as e:
         # Log warning but continue with database deletion
@@ -234,6 +233,7 @@ async def delete_subject(
 # =====================================================
 # DISCOVERY AND LISTING
 # =====================================================
+
 
 @subjects_router.get("/discover", operation_id="discover_subjects")
 async def discover_subjects(session: SessionDep, user: UserDep) -> list[Subject]:
@@ -291,7 +291,7 @@ async def get_subjects_with_metrics(
             subject=subject,
             queue_info=queue_info,
             subscriptions_count=subscription_count,
-            last_activity=None  # TODO: Implement last activity tracking
+            last_activity=None,  # TODO: Implement last activity tracking
         )
         results.append(subject_with_metrics)
 
@@ -301,6 +301,7 @@ async def get_subjects_with_metrics(
 # =====================================================
 # MESSAGE PUBLISHING
 # =====================================================
+
 
 @subjects_router.post("/{subject_uuid}/publish", operation_id="publish_messages_to_subject")
 async def publish_messages_to_subject(
@@ -312,7 +313,7 @@ async def publish_messages_to_subject(
 ) -> MessagePublishResponse:
     """
     Publish messages to a subject's exchange.
-    
+
     Only subject owners or admins can publish to subjects.
     """
     # Get subject and verify authorization
@@ -328,7 +329,7 @@ async def publish_messages_to_subject(
         if subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to publish to this subject"
+                detail="Not authorized to publish to this subject",
             )
 
     # Publish messages to the subject's exchange
@@ -345,7 +346,7 @@ async def publish_messages_to_subject(
                 subject_exchange=subject.backing_exchange_name,
                 routing_key="",  # Fanout exchange doesn't use routing keys
                 payload=message_payload,
-                payload_enc=publish_request.payload_encoding
+                payload_enc=publish_request.payload_encoding,
             )
 
             if result == 0:  # Success (assuming 0 indicates success)
@@ -355,20 +356,21 @@ async def publish_messages_to_subject(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to publish messages: {str(e)}"
+            detail=f"Failed to publish messages: {str(e)}",
         )
 
     return MessagePublishResponse(
         published_count=published_count,
         subject_uuid=subject_uuid,
         message_ids=message_ids,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
     )
 
 
 # =====================================================
 # QUEUE MANAGEMENT
 # =====================================================
+
 
 @subject_router.get("/{subject_uuid}/queue-info", operation_id="get_subject_queue_info")
 async def get_subject_queue_info(
@@ -393,7 +395,7 @@ async def get_subject_queue_info(
         if subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to view queue info for this subject"
+                detail="Not authorized to view queue info for this subject",
             )
 
     return await _get_subject_queue_info(subject, broker)
@@ -409,7 +411,7 @@ async def manage_subject_queues(
 ) -> QueueManagementResponse:
     """
     Perform queue management operations on a subject.
-    
+
     Supported actions:
     - info: Get queue information
     - purge: Clear all messages from subject queues
@@ -428,7 +430,7 @@ async def manage_subject_queues(
         if subject.owner_participant_id != endpoint.participant_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to manage queues for this subject"
+                detail="Not authorized to manage queues for this subject",
             )
 
     try:
@@ -438,7 +440,7 @@ async def manage_subject_queues(
                 success=True,
                 message="Queue information retrieved successfully",
                 queue_info=queue_info.model_dump(),
-                timestamp=datetime.utcnow()
+                timestamp=datetime.utcnow(),
             )
 
         elif queue_request.action == "purge":
@@ -449,7 +451,7 @@ async def manage_subject_queues(
                 queue_name = broker.build_queue_name(
                     tag="uudex",
                     subject_name=subject.subject_name,
-                    subscription_uuid=sub_link.subscription_uuid
+                    subscription_uuid=sub_link.subscription_uuid,
                 )
                 try:
                     # Note: RabbitMQ service has purge_queue method, but it's not in base class
@@ -463,7 +465,7 @@ async def manage_subject_queues(
                 success=True,
                 message=f"Purged {len(purged_queues)} queues",
                 queue_info={"purged_queues": purged_queues},
-                timestamp=datetime.utcnow()
+                timestamp=datetime.utcnow(),
             )
 
         elif queue_request.action == "delete" and queue_request.queue_name:
@@ -473,13 +475,13 @@ async def manage_subject_queues(
                 success=True,
                 message=f"Queue {queue_request.queue_name} deleted successfully",
                 queue_info={"deleted_queue": queue_request.queue_name, "result": result},
-                timestamp=datetime.utcnow()
+                timestamp=datetime.utcnow(),
             )
 
         else:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Unsupported action: {queue_request.action}"
+                detail=f"Unsupported action: {queue_request.action}",
             )
 
     except Exception as e:
@@ -487,13 +489,14 @@ async def manage_subject_queues(
             success=False,
             message=f"Queue management operation failed: {str(e)}",
             queue_info=None,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
 
 
 # =====================================================
 # BULK OPERATIONS
 # =====================================================
+
 
 @subjects_router.post("/bulk-operations", operation_id="bulk_subject_operations")
 async def bulk_subject_operations(
@@ -504,7 +507,7 @@ async def bulk_subject_operations(
 ) -> BulkOperationResult:
     """
     Perform bulk operations on multiple subjects.
-    
+
     Supported operations:
     - delete: Delete multiple subjects
     - purge_queues: Purge queues for multiple subjects
@@ -512,7 +515,7 @@ async def bulk_subject_operations(
     if not user.is_admin():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only administrators can perform bulk operations"
+            detail="Only administrators can perform bulk operations",
         )
 
     repo = pr.SubjectRepository(session)
@@ -530,8 +533,7 @@ async def bulk_subject_operations(
                 # Delete subject and its infrastructure
                 try:
                     broker.delete_subject(
-                        subject_name=subject.subject_name,
-                        subject_uuid=subject.subject_uuid
+                        subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
                     )
                 except Exception:
                     pass  # Continue with database deletion even if broker fails
@@ -545,7 +547,7 @@ async def bulk_subject_operations(
                     queue_name = broker.build_queue_name(
                         tag="uudex",
                         subject_name=subject.subject_name,
-                        subscription_uuid=sub_link.subscription_uuid
+                        subscription_uuid=sub_link.subscription_uuid,
                     )
                     try:
                         broker.delete_queue(queue_name)
@@ -555,7 +557,12 @@ async def bulk_subject_operations(
                 successful.append(subject_uuid)
 
             else:
-                failed.append({"subject_uuid": subject_uuid, "error": f"Unsupported operation: {bulk_request.operation}"})
+                failed.append(
+                    {
+                        "subject_uuid": subject_uuid,
+                        "error": f"Unsupported operation: {bulk_request.operation}",
+                    }
+                )
 
         except Exception as e:
             failed.append({"subject_uuid": subject_uuid, "error": str(e)})
@@ -564,13 +571,14 @@ async def bulk_subject_operations(
         successful=successful,
         failed=failed,
         total_processed=len(bulk_request.subject_uuids),
-        timestamp=datetime.utcnow()
+        timestamp=datetime.utcnow(),
     )
 
 
 # =====================================================
 # HELPER FUNCTIONS
 # =====================================================
+
 
 async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) -> SubjectQueueInfo:
     """
@@ -591,5 +599,5 @@ async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) 
         exchange_name=exchange_name,
         queue_count=queue_count,
         total_messages=total_messages,
-        total_consumers=total_consumers
+        total_consumers=total_consumers,
     )

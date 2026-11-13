@@ -9,7 +9,10 @@ from uudex_server.models.dataset_definition_models import (
 )
 from uudex_server.repos.dataset_definition_repository import DatasetDefinitionRepository
 
-XFAIL_17 = pytest.mark.xfail(strict=True, reason="#17: repository fixture missing, or repository called with an unmapped Create model")
+XFAIL_17 = pytest.mark.xfail(
+    strict=True,
+    reason="#17: repository fixture missing, or repository called with an unmapped Create model",
+)
 
 
 @XFAIL_17
