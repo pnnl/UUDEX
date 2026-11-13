@@ -34,7 +34,6 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
 
-# from . import kafka_mq
 from typing import Any
 
 from . import rabbit_mq
@@ -48,6 +47,5 @@ def create_broker_service(url: str, **kwargs: Any) -> UUDEXBrokerService:
         url = url.replace("rabbitmq://", "amqp://")
         return rabbit_mq.RabbitMqService(url, **kwargs)
     # if provider == "kafka":
-    #     return kafka_mq.KafkaService(url, **kwargs)
 
     raise ValueError(f"Invalid provider [{provider}] passed to MessageBroker factory")

@@ -140,7 +140,7 @@ class RabbitMqService(UUDEXBrokerService):
         return self._client.delete_queue("/", queue_name)
 
     def publish_message(self, subject_exchange, routing_key, payload, payload_enc="string"):
-        # payload_enc: string or base64
+        # payload_enc: string or base64  # noqa: ERA001
         return self._client.publish(
             "/",
             subject_exchange,
