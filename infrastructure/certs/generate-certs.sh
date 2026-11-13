@@ -10,25 +10,33 @@ trap 'echo "Error: step failed: $STEP (exit status $?)" >&2' ERR
 # Default values
 DEFAULT_CLIENT_NAME="client"
 DEFAULT_ORG="Organization"
+DEFAULT_CA_NAME="LocalCA"
 DEFAULT_COUNTRY="US"
 DEFAULT_STATE="State"
 DEFAULT_CITY="City"
 DEFAULT_DAYS="365"
 DEFAULT_KEY_SIZE="4096"
-DEFAULT_CERTS_DIR="\$HOME/.config/uudex/tls"
+DEFAULT_CERTS_REL=".config/uudex/tls"
+DEFAULT_CONFIG_REL=".config/uudex/certs.conf"
+DEFAULT_CERTS_DIR="\$HOME/$DEFAULT_CERTS_REL"
+DEFAULT_CONFIG_FILE="\$HOME/$DEFAULT_CONFIG_REL"
 
-# Output directory: -o, then UUDEX_CERTS, then ~/.config/uudex/tls. Keys must
-# never land in a working tree, so there is no relative default. An empty value
-# is resolved after argument parsing, so --help and -o work without HOME.
+# Output directory: -o, then UUDEX_CERTS, then OUTPUT_DIR in the config, then
+# the home-based default. Keys must never land in a working tree, so there is
+# no relative default. An empty value is resolved after argument parsing, so
+# --help and -o work without HOME.
 CERTS_DIR="${UUDEX_CERTS:-}"
 
 resolve_certs_dir() {
+    if [ -z "$CERTS_DIR" ] && [ -n "$CFG_OUTPUT_DIR" ]; then
+        CERTS_DIR="$CFG_OUTPUT_DIR"
+    fi
     if [ -z "$CERTS_DIR" ]; then
         if [ -z "${HOME:-}" ]; then
             echo "Error: HOME is not set; set UUDEX_CERTS or pass --output-dir" >&2
             exit 1
         fi
-        CERTS_DIR="$HOME/.config/uudex/tls"
+        CERTS_DIR="$HOME/$DEFAULT_CERTS_REL"
     fi
 }
 
@@ -59,21 +67,31 @@ prepare_certs_dir() {
     fi
 }
 
-# A value option needs a following value that is not blank and not itself an option.
-need_value() {
-    local opt="$1" argc="$2" value="$3"
-    if [ "$argc" -lt 2 ] || [ -z "$value" ]; then
-        echo "Error: $opt requires a value" >&2
+# A value, from an option or from the config file, must not be blank or
+# option-like. label names where it came from.
+check_value() {
+    local label="$1" value="$2"
+    if [ -z "$value" ]; then
+        echo "Error: $label requires a value" >&2
         exit 1
     fi
     if [[ "$value" =~ ^[[:space:]]+$ ]]; then
-        echo "Error: $opt requires a value that is not blank" >&2
+        echo "Error: $label requires a value that is not blank" >&2
         exit 1
     fi
     if [[ "$value" == -* ]]; then
-        echo "Error: $opt requires a value, got the option-like '$value'" >&2
+        echo "Error: $label requires a value, got the option-like '$value'" >&2
         exit 1
     fi
+}
+
+need_value() {
+    local opt="$1" argc="$2" value="$3"
+    if [ "$argc" -lt 2 ]; then
+        echo "Error: $opt requires a value" >&2
+        exit 1
+    fi
+    check_value "$opt" "$value"
 }
 
 KEY_SIZE_MIN=2048
@@ -83,17 +101,222 @@ KEY_SIZE_MAX=16384
 # fails on others, and the failure used to be reported as success. Digits are
 # spelled out because [0-9] also matches full-width digits in some UTF-8
 # locales, which then pass the pattern and break the arithmetic test.
-validate_numbers() {
+check_key_size() {
+    local label="$1" value="$2"
     local digit='[0123456789]' lead='[123456789]'
-    local key_re="^$lead$digit{3,4}\$" days_re="^$lead$digit{0,5}\$"
-    if ! [[ "$KEY_SIZE" =~ $key_re ]] || [ "$KEY_SIZE" -lt "$KEY_SIZE_MIN" ] || [ "$KEY_SIZE" -gt "$KEY_SIZE_MAX" ]; then
-        echo "Error: --key-size must be a whole number from $KEY_SIZE_MIN to $KEY_SIZE_MAX, got '$KEY_SIZE'" >&2
+    local key_re="^$lead$digit{3,4}\$"
+    if ! [[ "$value" =~ $key_re ]] || [ "$value" -lt "$KEY_SIZE_MIN" ] || [ "$value" -gt "$KEY_SIZE_MAX" ]; then
+        echo "Error: $label must be a whole number from $KEY_SIZE_MIN to $KEY_SIZE_MAX, got '$value'" >&2
         exit 1
     fi
-    if ! [[ "$DAYS" =~ $days_re ]]; then
-        echo "Error: --days must be a whole number from 1 to 999999, got '$DAYS'" >&2
+}
+
+check_days() {
+    local label="$1" value="$2"
+    local digit='[0123456789]' lead='[123456789]'
+    local days_re="^$lead$digit{0,5}\$"
+    if ! [[ "$value" =~ $days_re ]]; then
+        echo "Error: $label must be a whole number from 1 to 999999, got '$value'" >&2
         exit 1
     fi
+}
+
+# These values are placed in an openssl -subj string and in a generated openssl
+# config. In -subj, / starts a field, \ escapes and + makes a multi-valued
+# name; in the config, # starts a comment, $ expands, quotes group and \
+# escapes. Each would make the CA, server and client subjects differ or add
+# fields. = , ; & % : @ [ ] pass through unchanged and are allowed.
+check_subject_value() {
+    local label="$1" value="$2"
+    local bad_re='[/\#$"'"'"'+[:cntrl:]]'
+    if [[ "$value" =~ $bad_re ]]; then
+        if [[ "${BASH_REMATCH[0]}" == [[:cntrl:]] ]]; then
+            echo "Error: $label contains a control character, which openssl would misread in a certificate subject" >&2
+        else
+            echo "Error: $label contains the character '${BASH_REMATCH[0]}', which openssl would misread in a certificate subject" >&2
+        fi
+        exit 1
+    fi
+}
+
+IPV4_RE='^[0123456789]{1,3}(\.[0123456789]{1,3}){3}$'
+
+# Each field is 1 to 4 hex digits; "::" stands for one or more zero fields and
+# may appear once. Dotted-quad tails are not accepted.
+is_ipv6() {
+    local v="$1" head tail group count
+    local -a fields=() tail_fields=()
+    [[ "$v" =~ ^[0123456789abcdefABCDEF:]+$ ]] || return 1
+    [[ "$v" == *:::* || "$v" == *::*::* ]] && return 1
+    [[ "$v" == :* && "$v" != ::* ]] && return 1
+    [[ "$v" == *: && "$v" != *:: ]] && return 1
+    if [[ "$v" == *::* ]]; then
+        head="${v%%::*}"
+        tail="${v#*::}"
+        IFS=: read -ra fields <<< "$head"
+        IFS=: read -ra tail_fields <<< "$tail"
+        fields+=("${tail_fields[@]+"${tail_fields[@]}"}")
+        count=${#fields[@]}
+        [ "$count" -le 7 ] || return 1
+    else
+        IFS=: read -ra fields <<< "$v"
+        count=${#fields[@]}
+        [ "$count" -eq 8 ] || return 1
+    fi
+    for group in "${fields[@]+"${fields[@]}"}"; do
+        [[ "$group" =~ ^[0123456789abcdefABCDEF]{1,4}$ ]] || return 1
+    done
+}
+
+# A server name must be a DNS name, a dotted IPv4 address or an IPv6 address.
+# It is written into the server request config as CN and a SAN entry, so the
+# allowed characters are listed rather than the bad ones.
+check_domain() {
+    local label="$1" value="$2" octet
+    local dns_re='^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*_.-]+$'
+    if [[ "$value" == *:* ]]; then
+        is_ipv6 "$value" || {
+            echo "Error: $label '$value' is not a valid IPv6 address" >&2
+            exit 1
+        }
+        return 0
+    fi
+    if ! [[ "$value" =~ $dns_re ]]; then
+        echo "Error: $label '$value' is not a DNS name or IP address (letters, digits, '.', '-', '_' and '*' only)" >&2
+        exit 1
+    fi
+    if [[ "$value" =~ $IPV4_RE ]]; then
+        local -a octets
+        IFS=. read -ra octets <<< "$value"
+        for octet in "${octets[@]}"; do
+            if [[ "$octet" =~ ^0[0123456789] ]] || [ "$octet" -gt 255 ]; then
+                echo "Error: $label '$value' is not a valid IPv4 address (octets are 0 to 255 without leading zeros)" >&2
+                exit 1
+            fi
+        done
+    fi
+}
+
+CONFIG_FILE=""
+CFG_COUNTRY="" CFG_STATE="" CFG_CITY="" CFG_ORG="" CFG_CA_NAME=""
+CFG_KEY_SIZE="" CFG_DAYS="" CFG_OUTPUT_DIR=""
+CFG_DOMAINS=()
+
+config_fail() {
+    echo "Error: config file $CONFIG_FILE $1" >&2
+    exit 1
+}
+
+trim() {
+    local s="$1"
+    s="${s#"${s%%[![:space:]]*}"}"
+    printf '%s' "${s%"${s##*[![:space:]]}"}"
+}
+
+# The file is parsed, never sourced: it holds KEY = VALUE lines and nothing in
+# it is executed. Every value passes the checks its command-line twin does.
+parse_config() {
+    local lineno=0 line key value seen=" " label item rest
+    local line_re='^([A-Za-z_]+)[[:space:]]*=[[:space:]]*(.*)$'
+    while IFS= read -r line || [ -n "$line" ]; do
+        lineno=$((lineno + 1))
+        if [[ "$line" == *$'\r'* ]]; then
+            config_fail "line $lineno: carriage return found; use Unix line endings"
+        fi
+        line=$(trim "$line")
+        if [ -z "$line" ] || [[ "$line" == \#* ]]; then
+            continue
+        fi
+        if ! [[ "$line" =~ $line_re ]]; then
+            config_fail "line $lineno: expected KEY = VALUE, got '$line'"
+        fi
+        key="${BASH_REMATCH[1]}"
+        value=$(trim "${BASH_REMATCH[2]}")
+        label="config file $CONFIG_FILE line $lineno: $key"
+        case "$key" in
+            C|ST|L|O|CA_CN|KEY_SIZE|DAYS|DOMAINS|OUTPUT_DIR) ;;
+            *) config_fail "line $lineno: unknown key '$key' (known: C ST L O CA_CN KEY_SIZE DAYS DOMAINS OUTPUT_DIR)" ;;
+        esac
+        if [[ "$seen" == *" $key "* ]]; then
+            config_fail "line $lineno: key '$key' is set twice"
+        fi
+        seen="$seen$key "
+        check_value "$label" "$value"
+        case "$key" in
+            C) check_subject_value "$label" "$value"; CFG_COUNTRY="$value" ;;
+            ST) check_subject_value "$label" "$value"; CFG_STATE="$value" ;;
+            L) check_subject_value "$label" "$value"; CFG_CITY="$value" ;;
+            O) check_subject_value "$label" "$value"; CFG_ORG="$value" ;;
+            CA_CN) check_subject_value "$label" "$value"; CFG_CA_NAME="$value" ;;
+            KEY_SIZE)
+                check_key_size "$label" "$value"
+                CFG_KEY_SIZE="$value"
+                ;;
+            DAYS)
+                check_days "$label" "$value"
+                CFG_DAYS="$value"
+                ;;
+            DOMAINS)
+                rest="$value"
+                while :; do
+                    item=$(trim "${rest%%,*}")
+                    check_value "$label" "$item"
+                    check_domain "$label" "$item"
+                    CFG_DOMAINS+=("$item")
+                    [[ "$rest" == *,* ]] || break
+                    rest="${rest#*,}"
+                done
+                ;;
+            OUTPUT_DIR)
+                if [[ "$value" == \~/* ]]; then
+                    if [ -z "${HOME:-}" ]; then
+                        config_fail "line $lineno: OUTPUT_DIR uses ~ but HOME is not set"
+                    fi
+                    value="$HOME/${value#\~/}"
+                fi
+                if [[ "$value" != /* ]]; then
+                    config_fail "line $lineno: OUTPUT_DIR must be an absolute path or start with ~/, got '$value'"
+                fi
+                CFG_OUTPUT_DIR="$value"
+                ;;
+        esac
+    done < "$CONFIG_FILE"
+}
+
+# An explicit path (--config or UUDEX_CERTS_CONF) must exist; an empty
+# UUDEX_CERTS_CONF is refused rather than read as unset. The default path may be
+# absent, but a default that exists and cannot be used is an error. A config
+# others can write could redirect the output folder or the domains.
+load_config() {
+    local explicit=true mode
+    if [ -z "$CONFIG_FILE" ] && [ "${UUDEX_CERTS_CONF+set}" = set ]; then
+        check_value "UUDEX_CERTS_CONF" "$UUDEX_CERTS_CONF"
+        CONFIG_FILE="$UUDEX_CERTS_CONF"
+    fi
+    if [ -z "$CONFIG_FILE" ]; then
+        explicit=false
+        if [ -z "${HOME:-}" ]; then
+            return 0
+        fi
+        CONFIG_FILE="$HOME/$DEFAULT_CONFIG_REL"
+        if [ ! -e "$CONFIG_FILE" ] && [ ! -L "$CONFIG_FILE" ]; then
+            return 0
+        fi
+    fi
+    if [ ! -f "$CONFIG_FILE" ]; then
+        if [ "$explicit" = true ] && [ ! -e "$CONFIG_FILE" ]; then
+            config_fail "does not exist"
+        fi
+        config_fail "is not a regular file"
+    fi
+    if [ ! -r "$CONFIG_FILE" ] || [ ! -O "$CONFIG_FILE" ]; then
+        config_fail "must be readable and owned by you"
+    fi
+    mode=$(ls -ldL "$CONFIG_FILE") || config_fail "permissions cannot be read"
+    if [ "${mode:5:1}" = "w" ] || [ "${mode:8:1}" = "w" ]; then
+        config_fail "is writable by other users; run chmod go-w on it"
+    fi
+    parse_config
 }
 
 # Function to display help
@@ -104,7 +327,9 @@ show_help() {
     echo ""
     echo "Positional arguments:"
     echo "  CLIENT_NAME         Name for the client certificate (default: $DEFAULT_CLIENT_NAME)"
-    echo "  ORG                 Organization name (default: $DEFAULT_ORG)"
+    echo "  ORG                 Organization name (config key O, default: $DEFAULT_ORG)"
+    echo ""
+    echo "Nothing is required. Precedence: command line, then config file, then built-in default."
     echo ""
     echo "Options:"
     echo "  -c, --country CODE  Country code (default: $DEFAULT_COUNTRY)"
@@ -112,14 +337,22 @@ show_help() {
     echo "  -l, --city CITY     City or locality (default: $DEFAULT_CITY)"
     echo "  -d, --days DAYS     Certificate validity in days (default: $DEFAULT_DAYS)"
     echo "  -k, --key-size SIZE RSA key size in bits (default: $DEFAULT_KEY_SIZE)"
-    echo "  -o, --output-dir DIR Output directory for certificates (overrides UUDEX_CERTS)"
+    echo "  -o, --output-dir DIR Output directory for certificates (overrides UUDEX_CERTS and OUTPUT_DIR)"
+    echo "  --org ORG           Organization name (same as the ORG argument)"
+    echo "  --ca-name NAME      CA common name (default: $DEFAULT_CA_NAME)"
+    echo "  --config FILE       Read defaults from FILE (default: $DEFAULT_CONFIG_FILE, if it exists)"
     echo "  --domain DOMAIN     Add domain to server certificate (can be used multiple times)"
     echo "  --server-only       Generate only server certificate with specified domains"
     echo "  --list              List existing certificates in the output directory"
     echo "  -h, --help          Show this help message"
     echo ""
     echo "Environment variables:"
-    echo "  UUDEX_CERTS         Override certificate output directory (default: $DEFAULT_CERTS_DIR)"
+    echo "  UUDEX_CERTS         Override certificate output directory (overrides OUTPUT_DIR; default: $DEFAULT_CERTS_DIR)"
+    echo "  UUDEX_CERTS_CONF    Config file to read instead of $DEFAULT_CONFIG_FILE"
+    echo ""
+    echo "Config file: KEY = VALUE lines; keys C ST L O CA_CN KEY_SIZE DAYS DOMAINS OUTPUT_DIR."
+    echo "  OUTPUT_DIR sets the output directory when -o and UUDEX_CERTS are not given."
+    echo "See uudex-certs.conf.example next to this script."
     echo ""
     echo "Examples:"
     echo "  $0                              # Generate certificate for 'client'"
@@ -183,11 +416,12 @@ list_certificates() {
 # Initialize variables
 CLIENT_NAME=""
 ORG=""
-COUNTRY="$DEFAULT_COUNTRY"
-STATE="$DEFAULT_STATE"
-CITY="$DEFAULT_CITY"
-DAYS="$DEFAULT_DAYS"
-KEY_SIZE="$DEFAULT_KEY_SIZE"
+COUNTRY=""
+STATE=""
+CITY=""
+CA_NAME=""
+DAYS=""
+KEY_SIZE=""
 LIST_CERTS=false
 SERVER_ONLY=false
 DOMAINS=()  # Array to store multiple domains
@@ -237,6 +471,21 @@ while [[ $# -gt 0 ]]; do
             KEY_SIZE="$2"
             shift 2
             ;;
+        --org)
+            need_value "$1" "$#" "${2-}"
+            ORG="$2"
+            shift 2
+            ;;
+        --ca-name)
+            need_value "$1" "$#" "${2-}"
+            CA_NAME="$2"
+            shift 2
+            ;;
+        --config)
+            need_value "$1" "$#" "${2-}"
+            CONFIG_FILE="$2"
+            shift 2
+            ;;
         -o|--output-dir)
             need_value "$1" "$#" "${2-}"
             CERTS_DIR="$2"
@@ -262,6 +511,18 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Every value from the command line is checked before any file is read or written.
+check_subject_value "--country" "$COUNTRY"
+check_subject_value "--state" "$STATE"
+check_subject_value "--city" "$CITY"
+check_subject_value "ORG (second argument or --org)" "$ORG"
+check_subject_value "--ca-name" "$CA_NAME"
+check_subject_value "CLIENT_NAME" "$CLIENT_NAME"
+for domain in "${DOMAINS[@]+"${DOMAINS[@]}"}"; do
+    check_domain "--domain" "$domain"
+done
+
+load_config
 resolve_certs_dir
 
 # If list option is specified, list certificates and exit
@@ -270,29 +531,40 @@ if [ "$LIST_CERTS" = true ]; then
     exit 0
 fi
 
+# Command line wins, then the config file, then the built-in default.
+apply_config_and_defaults() {
+    : "${COUNTRY:=${CFG_COUNTRY:-$DEFAULT_COUNTRY}}"
+    : "${STATE:=${CFG_STATE:-$DEFAULT_STATE}}"
+    : "${CITY:=${CFG_CITY:-$DEFAULT_CITY}}"
+    : "${ORG:=${CFG_ORG:-$DEFAULT_ORG}}"
+    : "${CA_NAME:=${CFG_CA_NAME:-$DEFAULT_CA_NAME}}"
+    : "${KEY_SIZE:=${CFG_KEY_SIZE:-$DEFAULT_KEY_SIZE}}"
+    : "${DAYS:=${CFG_DAYS:-$DEFAULT_DAYS}}"
+    if [ ${#DOMAINS[@]} -eq 0 ] && [ ${#CFG_DOMAINS[@]} -gt 0 ]; then
+        DOMAINS=("${CFG_DOMAINS[@]}")
+    fi
+}
+
 # Handle server-only mode
 if [ "$SERVER_ONLY" = true ]; then
     # For server-only mode, we need ORG but not CLIENT_NAME
-    if [[ -z "$ORG" ]]; then
-        if [[ -n "$CLIENT_NAME" ]]; then
-            # If CLIENT_NAME is provided but not ORG, treat CLIENT_NAME as ORG
-            ORG="$CLIENT_NAME"
-            CLIENT_NAME=""
-        else
-            ORG="$DEFAULT_ORG"
-        fi
+    if [[ -z "$ORG" ]] && [[ -n "$CLIENT_NAME" ]]; then
+        # If CLIENT_NAME is provided but not ORG, treat CLIENT_NAME as ORG
+        ORG="$CLIENT_NAME"
+        CLIENT_NAME=""
     fi
+    apply_config_and_defaults
 
     # Require at least one domain for server-only mode
     if [ ${#DOMAINS[@]} -eq 0 ]; then
-        echo "Error: --server-only requires at least one --domain specification" >&2
+        echo "Error: --server-only requires at least one --domain (or DOMAINS in the config file)" >&2
         echo "Example: $0 --server-only \"My Org\" --domain localhost --domain api.example.com" >&2
         exit 1
     fi
 else
     # Set defaults for normal mode (client certificate generation)
     CLIENT_NAME="${CLIENT_NAME:-$DEFAULT_CLIENT_NAME}"
-    ORG="${ORG:-$DEFAULT_ORG}"
+    apply_config_and_defaults
 
     # If no domains specified, default to localhost
     if [ ${#DOMAINS[@]} -eq 0 ]; then
@@ -301,11 +573,13 @@ else
 fi
 
 STEP="validate numbers"
-validate_numbers
+check_key_size "--key-size" "$KEY_SIZE"
+check_days "--days" "$DAYS"
 STEP="prepare output folder"
 prepare_certs_dir
 
 # Generate CA only if it doesn't exist
+CA_REUSED=false
 if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
     STEP="print progress"
     echo "Generating new CA certificate..."
@@ -314,13 +588,28 @@ if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
     openssl genrsa -out "$CERTS_DIR/ca.key" "$KEY_SIZE"
 
     STEP="generate CA certificate"
-    openssl req -new -x509 -days "$DAYS" -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=LocalCA"
+    openssl req -new -x509 -days "$DAYS" -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CA_NAME"
 
     STEP="print progress"
     echo "CA certificate generated successfully!"
 else
     STEP="print progress"
     echo "Using existing CA certificate..."
+    CA_REUSED=true
+fi
+
+# The CA subject printed below is read back from ca.crt: an existing CA is
+# kept as it is, so the requested values may not be the ones in use.
+STEP="read CA subject"
+CA_SUBJECT_OPTS="sep_comma_plus_space,dn_rev,sname,utf8"
+CA_SUBJECT=$(openssl x509 -in "$CERTS_DIR/ca.crt" -noout -subject -nameopt "$CA_SUBJECT_OPTS") || {
+    echo "Error: cannot read the subject of $CERTS_DIR/ca.crt" >&2
+    exit 1
+}
+CA_SUBJECT="${CA_SUBJECT#subject=}"
+CA_REQUESTED="CN=$CA_NAME, O=$ORG, L=$CITY, ST=$STATE, C=$COUNTRY"
+if [ "$CA_REUSED" = true ] && [ "$CA_SUBJECT" != "$CA_REQUESTED" ]; then
+    echo "Warning: the existing CA at $CERTS_DIR/ca.crt has subject '$CA_SUBJECT', not the requested '$CA_REQUESTED'; the existing CA is kept" >&2
 fi
 
 # Function to generate server certificate with multiple domains
@@ -364,10 +653,16 @@ subjectAltName = @alt_names
 EOF
 
     # Add all domains as alternative names
-    local i=1
+    # An IP address in a DNS entry never matches a client that connects by IP.
+    local dns_i=1 ip_i=1
     for domain in "${domains[@]}"; do
-        echo "DNS.${i} = $domain" >> "$config_file"
-        ((i++))
+        if [[ "$domain" == *:* || "$domain" =~ $IPV4_RE ]]; then
+            echo "IP.${ip_i} = $domain" >> "$config_file"
+            ip_i=$((ip_i + 1))
+        else
+            echo "DNS.${dns_i} = $domain" >> "$config_file"
+            dns_i=$((dns_i + 1))
+        fi
     done
 
     STEP="generate server certificate request"
@@ -422,6 +717,7 @@ if [ "$SERVER_ONLY" = true ]; then
     echo "  State: $STATE"
     echo "  City: $CITY"
     echo "  Organization: $ORG"
+    echo "  CA subject: $CA_SUBJECT"
     echo "  Domains: ${DOMAINS[*]}"
     echo "  Valid for: $DAYS days"
     echo "  Key size: $KEY_SIZE bits"
@@ -465,6 +761,7 @@ echo "  Country: $COUNTRY"
 echo "  State: $STATE"
 echo "  City: $CITY"
 echo "  Organization: $ORG"
+echo "  CA subject: $CA_SUBJECT"
 echo "  Client Name: $CLIENT_NAME"
 echo "  Server Domains: ${DOMAINS[*]}"
 echo "  Valid for: $DAYS days"
