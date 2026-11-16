@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlmodel import select
+from sqlmodel import delete, select
 
 import uudex_server.models as m
 from conftest import identity_headers
@@ -14,6 +14,7 @@ from uudex_server.repos.endpoint_repository import EndpointRepository
 from uudex_server.services.database_service import get_db_session
 
 TRUSTED = "127.0.0.1"
+NEW_CN = "newcomer"
 
 
 @asynccontextmanager
@@ -21,6 +22,21 @@ async def trusted_client():
     transport = ASGITransport(app=app, client=(TRUSTED, 54321))
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
+
+
+@pytest.fixture(autouse=True)
+async def empty_endpoint_table(setup_test_env):
+    """The test database is shared and never reset, so these tests start and end with no endpoints."""
+    async with get_db_session() as session:
+        await session.execute(delete(m.EndPoint))
+    yield
+    async with get_db_session() as session:
+        await session.execute(delete(m.EndPoint))
+
+
+def name(prefix: str) -> str:
+    """A fresh common name, so no test meets another test's cached identity."""
+    return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
 async def seed(cn: str, *, admin: bool, active: bool = True, participant_id: int | None = None):
@@ -60,8 +76,8 @@ async def all_endpoints() -> list[m.EndPoint]:
 
 def body(participant_id: int, **overrides) -> dict:
     return {
-        "endpoint_user_name": "newcomer",
-        "certificate_dn": "newcomer",
+        "endpoint_user_name": NEW_CN,
+        "certificate_dn": NEW_CN,
         "description": "made by an admin",
         "uudex_administrator_sw": "N",
         "participant_administrator_sw": "N",
@@ -73,34 +89,36 @@ async def test_no_known_caller_cannot_create_the_first_admin(setup_test_env):
     payload = body(1, uudex_administrator_sw="Y", participant_administrator_sw="Y")
     async with trusted_client() as c:
         response = await c.post(
-            "/endpoint/", json=payload, headers=identity_headers("nobody-here")
+            "/endpoint/", json=payload, headers=identity_headers(name("nobody"))
         )
     assert response.status_code == 401
     assert await all_endpoints() == []
 
 
 async def test_a_non_admin_cannot_create_an_admin(setup_test_env):
-    pid = await seed("admin1", admin=True)
-    await seed("user1", admin=False, participant_id=pid)
+    admin_cn, user_cn = name("admin"), name("user")
+    pid = await seed(admin_cn, admin=True)
+    await seed(user_cn, admin=False, participant_id=pid)
     payload = body(pid, uudex_administrator_sw="Y", participant_administrator_sw="Y")
     async with trusted_client() as c:
-        response = await c.post("/endpoint/", json=payload, headers=identity_headers("user1"))
+        response = await c.post("/endpoint/", json=payload, headers=identity_headers(user_cn))
     assert response.status_code == 403
-    assert sorted(e.certificate_dn for e in await all_endpoints()) == ["admin1", "user1"]
+    assert sorted(e.certificate_dn for e in await all_endpoints()) == sorted([admin_cn, user_cn])
 
 
 async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env):
-    pid = await seed("admin1", admin=True)
-    await seed("admin2", admin=True, participant_id=pid)
+    admin_cn = name("admin")
+    pid = await seed(admin_cn, admin=True)
+    await seed(name("admin"), admin=True, participant_id=pid)
     async with trusted_client() as c:
         response = await c.post(
-            "/endpoint/", json=body(pid), headers=identity_headers("admin1")
+            "/endpoint/", json=body(pid), headers=identity_headers(admin_cn)
         )
     assert response.status_code == 200
-    rows = [e for e in await all_endpoints() if e.certificate_dn == "newcomer"]
+    rows = [e for e in await all_endpoints() if e.certificate_dn == NEW_CN]
     assert len(rows) == 1
     row = rows[0]
-    assert row.endpoint_user_name == "newcomer"
+    assert row.endpoint_user_name == NEW_CN
     assert row.description == "made by an admin"
     assert row.uudex_administrator_sw == "N"
     assert row.participant_administrator_sw == "N"
