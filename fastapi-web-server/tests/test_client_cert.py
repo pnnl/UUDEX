@@ -150,8 +150,9 @@ async def test_two_forwarded_header_lines_are_refused(alice, caplog):
     await seed_endpoint(alice)
     caplog.set_level(logging.DEBUG)
     value = b64_der(leaf_for(alice))
-    response = await get_me(TRUSTED, [(FORWARDED_CERT_HEADER, value), (FORWARDED_CERT_HEADER, value)])
+    response = await get_me(
+        TRUSTED, [(FORWARDED_CERT_HEADER, value), (FORWARDED_CERT_HEADER, value)]
+    )
     assert (response.status_code, response.json()) == (401, INVALID_CERT_BODY)
     assert "Refused client certificate: multiple_headers" in caplog.text
     assert value[10:30] not in caplog.text
-

@@ -137,7 +137,9 @@ async def check_ssl_cert(
         cert = parse_forwarded_cert(headers[0] if headers else None)
     except ClientCertError as e:
         logger.warning(f"Refused client certificate: {e.reason}")
-        return JSONResponse(status_code=401, content=CERT_REFUSAL_BODIES.get(e.reason, INVALID_CERT_BODY))
+        return JSONResponse(
+            status_code=401, content=CERT_REFUSAL_BODIES.get(e.reason, INVALID_CERT_BODY)
+        )
 
     cn = cert.cn
     logger.debug(f"Extracted CN: {cn}")
