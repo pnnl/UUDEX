@@ -1,12 +1,16 @@
 """The identity headers are believed only from a trusted proxy peer."""
 
+import json
 import logging
+import os
 import socket
+import subprocess
+import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
-from contextlib import asynccontextmanager
+from collections.abc import Iterator
+from contextlib import asynccontextmanager, contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 
@@ -28,6 +32,11 @@ UNTRUSTED = "10.1.2.3"
 FORGED_CLAIM = "10.9.9.9"
 NO_IDENTITY_BODY = "No certificate detected."
 SERVER_DIR = Path(__file__).resolve().parents[1]
+BASE_SETTINGS = {
+    "x_ssl_cert": "x",
+    "postgres_dsn": "sqlite+aiosqlite:///x.db",
+    "messagebus_connection": "rabbitmq://x",
+}
 
 
 @asynccontextmanager
@@ -119,8 +128,8 @@ async def test_mapped_ipv6_peer_is_judged_by_its_ipv4_address():
         trusted = await c.get("/endpoint/me")
     async with client_from(f"::ffff:{UNTRUSTED}") as c:
         untrusted = await c.get("/endpoint/me")
-    assert trusted.json() == NO_IDENTITY_BODY
-    assert untrusted.json() == UNTRUSTED_PEER_BODY
+    assert (trusted.status_code, trusted.json()) == (401, NO_IDENTITY_BODY)
+    assert (untrusted.status_code, untrusted.json()) == (401, UNTRUSTED_PEER_BODY)
 
 
 @pytest.mark.parametrize("path", ["/docsx", "/openapi.jsonx", "/docs/", "/statusx", "/health"])
@@ -151,34 +160,25 @@ async def test_refusal_log_has_the_peer_and_no_header_value(caplog):
         assert value not in caplog.text
 
 
-class UvicornServer:
-    """The app under a real uvicorn server on a loopback port."""
-
-    def __init__(self, proxy_headers: bool):
-        self.sock = socket.socket()
-        self.sock.bind((TRUSTED, 0))
-        self.port = self.sock.getsockname()[1]
+@contextmanager
+def uvicorn_server(proxy_headers: bool) -> Iterator[int]:
+    """Run the app under a real uvicorn server on a loopback port; yield the port."""
+    with socket.socket() as sock:
+        sock.bind((TRUSTED, 0))
         config = uvicorn.Config(app, lifespan="off", log_level="error", proxy_headers=proxy_headers)
-        self.server = uvicorn.Server(config)
-        self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [self.sock]})
-
-    def __enter__(self):
-        self.thread.start()
-        deadline = time.monotonic() + 10
-        while not self.server.started:
-            assert time.monotonic() < deadline, "uvicorn did not start"
-            time.sleep(0.01)
-        return self
-
-    def __exit__(self, *exc):
-        self.server.should_exit = True
-        self.thread.join(timeout=10)
-        self.sock.close()
-
-
-@pytest.fixture
-def uvicorn_server() -> Callable[[bool], UvicornServer]:
-    return UvicornServer
+        server = uvicorn.Server(config)
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 10
+            while not server.started:
+                assert time.monotonic() < deadline, "uvicorn did not start"
+                time.sleep(0.01)
+            yield sock.getsockname()[1]
+        finally:
+            server.should_exit = True
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "uvicorn thread did not stop"
 
 
 # The real peer is 127.0.0.1, which uvicorn trusts by default. The forged claim is the only
@@ -193,12 +193,12 @@ def uvicorn_server() -> Callable[[bool], UvicornServer]:
     ],
 )
 async def test_uvicorn_proxy_headers_decide_whether_a_forged_claim_works(
-    monkeypatch, uvicorn_server, proxy_headers, header, body
+    monkeypatch, proxy_headers, header, body
 ):
     monkeypatch.setattr(main.settings, "trusted_proxy_hosts", [ip_address(FORGED_CLAIM)])
     value = FORGED_CLAIM if header == "X-Forwarded-For" else f"for={FORGED_CLAIM}"
-    with uvicorn_server(proxy_headers) as server:
-        async with AsyncClient(base_url=f"http://{TRUSTED}:{server.port}") as c:
+    with uvicorn_server(proxy_headers) as port:
+        async with AsyncClient(base_url=f"http://{TRUSTED}:{port}") as c:
             response = await c.get("/endpoint/me", headers={header: value})
     assert response.status_code == 401
     assert response.json() == body
@@ -211,18 +211,24 @@ def test_shipped_uvicorn_commands_ignore_proxy_headers(name):
     ]
     assert len(commands) == 1
     assert '"--no-proxy-headers"' in commands[0]
+    assert '"--proxy-headers"' not in commands[0]
+
+
+@pytest.mark.parametrize("name", ["README.md", "build_client.sh"])
+def test_documented_uvicorn_start_commands_ignore_proxy_headers(name):
+    commands = [
+        line
+        for line in (SERVER_DIR / name).read_text().splitlines()
+        if "uvicorn " in line and "--port" in line
+    ]
+    assert len(commands) == 1
+    assert " --no-proxy-headers" in commands[0]
+    assert " --proxy-headers" not in commands[0]
 
 
 def test_trusted_hosts_default_to_none(monkeypatch):
     monkeypatch.delenv("TRUSTED_PROXY_HOSTS", raising=False)
     assert Settings(**BASE_SETTINGS).trusted_proxy_hosts == []
-
-
-BASE_SETTINGS = {
-    "x_ssl_cert": "x",
-    "postgres_dsn": "sqlite+aiosqlite:///x.db",
-    "messagebus_connection": "rabbitmq://x",
-}
 
 
 @pytest.mark.parametrize("value", ['["not-an-ip"]', "[1.2.3", '["10.0.0.1", "10.0.0.256"]', "{}"])
@@ -242,3 +248,161 @@ def test_trusted_hosts_parse_from_a_json_list(monkeypatch):
     monkeypatch.setenv("TRUSTED_PROXY_HOSTS", '["172.29.77.20", "::1"]')
     hosts = Settings(**BASE_SETTINGS).trusted_proxy_hosts
     assert [str(h) for h in hosts] == ["172.29.77.20", "::1"]
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "null",
+        '"10.0.0.1"',
+        "[2886749460]",
+        "[null]",
+        "[true]",
+        '["::ffff:10.0.0.1"]',
+        '["::ffff:a00:1"]',
+        '["fe80::1%eth0"]',
+    ],
+)
+def test_trusted_hosts_that_would_never_match_or_load_as_something_else_are_refused(value):
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(**BASE_SETTINGS, trusted_proxy_hosts=value)
+    messages = [error["msg"] for error in excinfo.value.errors()]
+    assert len(messages) == 1
+    assert "trusted_proxy_hosts" in messages[0]
+
+
+@pytest.mark.parametrize("value", [None, 5, [2886749460], [None], ["::ffff:10.0.0.1"]])
+def test_trusted_hosts_given_as_python_values_are_checked_too(value):
+    with pytest.raises(ValidationError):
+        Settings(**BASE_SETTINGS, trusted_proxy_hosts=value)
+
+
+@pytest.mark.parametrize("value", ["null", "[2886749460]", '["::ffff:10.0.0.1"]'])
+def test_refused_trusted_hosts_in_the_environment_fail_at_load(monkeypatch, value):
+    monkeypatch.setenv("TRUSTED_PROXY_HOSTS", value)
+    with pytest.raises((SettingsError, ValidationError)):
+        Settings(**BASE_SETTINGS)
+
+
+@pytest.mark.parametrize("value", ["[]", '["10.0.0.1", "2001:db8::1"]'])
+def test_plain_address_lists_still_load(value):
+    hosts = Settings(**BASE_SETTINGS, trusted_proxy_hosts=value).trusted_proxy_hosts
+    assert [str(h) for h in hosts] == json.loads(value)
+
+
+async def call_asgi(scope_overrides: dict) -> tuple[int, bytes]:
+    """Call the app with a hand-built HTTP scope; return the status and the body."""
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "GET",
+        "scheme": "http",
+        "path": "/endpoint/me",
+        "raw_path": b"/endpoint/me",
+        "query_string": b"",
+        "headers": [(k.lower().encode(), v.encode()) for k, v in identity_headers("x").items()],
+        "server": ("test", 80),
+    } | scope_overrides
+    sent = []
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        sent.append(message)
+
+    await app(scope, receive, send)
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, body
+
+
+async def test_a_request_with_no_client_address_is_refused():
+    status, body = await call_asgi({"client": None})
+    assert status == 401
+    assert json.loads(body) == UNTRUSTED_PEER_BODY
+
+
+async def test_the_asgi_control_with_a_trusted_client_passes_the_gate():
+    status, body = await call_asgi({"client": (TRUSTED, 54321)})
+    assert json.loads(body) != UNTRUSTED_PEER_BODY
+
+
+def test_an_empty_trusted_list_logs_one_warning_naming_the_setting(caplog):
+    caplog.set_level(logging.WARNING)
+    main.warn_if_no_trusted_proxies([])
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "trusted_proxy_hosts" in warnings[0].getMessage()
+    assert "refused" in warnings[0].getMessage()
+
+
+def test_a_non_empty_trusted_list_logs_no_warning(caplog):
+    caplog.set_level(logging.WARNING)
+    main.warn_if_no_trusted_proxies([ip_address(TRUSTED)])
+    assert caplog.records == []
+
+
+def import_app_in_a_fresh_process(
+    tmp_path: Path, trusted: str | None
+) -> subprocess.CompletedProcess:
+    """Import uudex_server.main as a server start would, with only the settings given here.
+
+    The environment is built from nothing, and the settings file and secrets directory are
+    named explicitly, so no .env or secrets directory of the developer is read.
+    """
+    secrets = tmp_path / "secrets"
+    secrets.mkdir(exist_ok=True)
+    env_file = tmp_path / "settings.env"
+    env_file.write_text(
+        "X_SSL_CERT=x\n"
+        f"postgres_dsn=sqlite+aiosqlite:///{tmp_path}/x.db\n"
+        "messagebus_connection=rabbitmq://x\n"
+    )
+    env = {
+        "PYTHONPATH": os.pathsep.join([str(SERVER_DIR / "src"), *sys.path]),
+        "PYTHONPYCACHEPREFIX": str(tmp_path / "pycache"),
+        "UUDEX_SETTINGS": str(env_file),
+        "UUDEX_SECRETS_DIR": str(secrets),
+    }
+    if trusted is not None:
+        env["TRUSTED_PROXY_HOSTS"] = trusted
+    return subprocess.run(
+        [sys.executable, "-c", "import uudex_server.main"],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+
+SENTINEL = "sentinel-4f2a9c"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [f'["{SENTINEL}"]', f"{SENTINEL} garbage"],
+    ids=["validation-error", "unparsable-environment-value"],
+)
+def test_a_bad_trusted_list_stops_startup_without_echoing_the_value(tmp_path, value):
+    result = import_app_in_a_fresh_process(tmp_path, value)
+    assert result.returncode == 1
+    assert SENTINEL not in result.stdout + result.stderr
+    assert "trusted_proxy_hosts" in result.stdout + result.stderr
+
+
+def test_a_valid_trusted_list_starts_without_the_empty_warning(tmp_path):
+    result = import_app_in_a_fresh_process(tmp_path, '["127.0.0.1"]')
+    assert result.returncode == 0, result.stderr
+    assert "Settings initialized successfully" in result.stdout
+    assert "no peer is trusted" not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("value", ["[]", None], ids=["empty-list", "unset"])
+def test_an_empty_trusted_list_is_announced_at_startup(tmp_path, value):
+    result = import_app_in_a_fresh_process(tmp_path, value)
+    assert result.returncode == 0, result.stderr
+    assert "no peer is trusted" in result.stdout + result.stderr
