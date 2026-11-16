@@ -10,25 +10,21 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import contextmanager
 from ipaddress import ip_address
 from pathlib import Path
 
 import pytest
 import uvicorn
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from pydantic import ValidationError
 from pydantic_settings import SettingsError
 
 import uudex_server.main as main
-import uudex_server.models as m
-from conftest import identity_headers
+from conftest import TRUSTED, UNTRUSTED, client_from, identity_headers, seed_endpoint
 from uudex_server.core.settings import Settings
 from uudex_server.main import UNTRUSTED_PEER_BODY, app
-from uudex_server.services.database_service import get_db_session
 
-TRUSTED = "127.0.0.1"
-UNTRUSTED = "10.1.2.3"
 FORGED_CLAIM = "10.9.9.9"
 NO_IDENTITY_BODY = "No certificate detected."
 SERVER_DIR = Path(__file__).resolve().parents[1]
@@ -37,42 +33,6 @@ BASE_SETTINGS = {
     "postgres_dsn": "sqlite+aiosqlite:///x.db",
     "messagebus_connection": "rabbitmq://x",
 }
-
-
-@asynccontextmanager
-async def client_from(peer: str):
-    """A client whose TCP peer, as the app sees it, is `peer`."""
-    transport = ASGITransport(app=app, client=(peer, 54321))
-    async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
-
-
-async def seed_endpoint(cn: str) -> str:
-    """Create an active participant and endpoint for `cn`; return the endpoint_uuid."""
-    endpoint_uuid = str(uuid.uuid4())
-    async with get_db_session() as session:
-        participant = m.Participant(
-            participant_uuid=str(uuid.uuid4()),
-            participant_short_name="p",
-            participant_long_name="p",
-            root_org_sw="N",
-            create_datetime=None,
-        )
-        session.add(participant)
-        await session.flush()
-        session.add(
-            m.EndPoint(
-                endpoint_uuid=endpoint_uuid,
-                endpoint_user_name=cn,
-                certificate_dn=cn,
-                description="seeded for the trusted proxy tests",
-                uudex_administrator_sw="N",
-                participant_administrator_sw="N",
-                participant_id=participant.participant_id,
-                create_datetime=None,
-            )
-        )
-    return endpoint_uuid
 
 
 @pytest.fixture

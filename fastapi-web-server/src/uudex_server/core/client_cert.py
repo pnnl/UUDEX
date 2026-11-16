@@ -7,6 +7,14 @@ from dataclasses import dataclass
 from cryptography import x509
 from cryptography.x509.oid import NameOID
 
+__all__ = [
+    "FORWARDED_CERT_HEADER",
+    "MAX_HEADER_CHARS",
+    "ClientCert",
+    "ClientCertError",
+    "parse_forwarded_cert",
+]
+
 FORWARDED_CERT_HEADER = "X-Forwarded-Tls-Client-Cert"
 
 # A leaf plus its CA is about 3 KiB of base64; 16 KiB leaves room for a long chain

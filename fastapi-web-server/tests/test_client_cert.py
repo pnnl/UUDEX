@@ -8,8 +8,17 @@ from urllib.parse import unquote_plus
 import pytest
 from cryptography.hazmat.primitives import serialization
 
-from conftest import b64_der, ca_pair, forwarded_chain, identity_headers, make_leaf
-from test_trusted_proxy import TRUSTED, UNTRUSTED, client_from, seed_endpoint
+from conftest import (
+    TRUSTED,
+    UNTRUSTED,
+    b64_der,
+    ca_pair,
+    client_from,
+    forwarded_chain,
+    identity_headers,
+    make_leaf,
+    seed_endpoint,
+)
 from uudex_server.core.client_cert import FORWARDED_CERT_HEADER, MAX_HEADER_CHARS
 from uudex_server.main import INVALID_CERT_BODY, UNTRUSTED_PEER_BODY
 
@@ -87,10 +96,13 @@ async def test_untrusted_peer_with_a_valid_forwarded_leaf_is_refused(alice):
 
 async def test_base64_with_plus_and_slash_parses_unescaped(alice):
     expected = await seed_endpoint(alice)
-    leaf = leaf_for(alice)
-    while not ({"+", "/"} <= set(b64_der(leaf))):
-        leaf = leaf_for(alice)
-    value = b64_der(leaf)
+    # Each random key gives a different base64 string; the cap keeps a bad run from hanging.
+    for _ in range(200):
+        value = b64_der(leaf_for(alice))
+        if {"+", "/"} <= set(value):
+            break
+    else:
+        pytest.fail("no generated certificate base64 held both '+' and '/'")
     # Control: URL-decoding this value would change it, so a 200 shows it was not decoded.
     assert unquote_plus(value) != value
     response = await get_me(TRUSTED, {FORWARDED_CERT_HEADER: value})
