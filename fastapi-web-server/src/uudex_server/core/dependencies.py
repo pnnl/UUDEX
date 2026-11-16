@@ -28,11 +28,7 @@ async def get_current_user(
             status_code=HTTP_401_UNAUTHORIZED, detail="Unauthorized: No certificate found"
         )
 
-    from uudex_server.core.settings import get_settings
-
-    settings = get_settings()
-    auth_service = AuthenticationService.create(settings)
-    endpoint = await auth_service.get_endpoint_by_certificate_dn(cert_cn, db)
+    endpoint = await AuthenticationService().get_endpoint_by_certificate_dn(cert_cn, db)
 
     if not endpoint:
         raise HTTPException(

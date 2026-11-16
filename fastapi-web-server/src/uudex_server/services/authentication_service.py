@@ -4,7 +4,6 @@ import logging
 from collections.abc import Callable
 from functools import wraps
 
-from uudex_server.core.settings import Settings
 from uudex_server.models.endpoint_models import EndPoint
 
 _log = logging.getLogger(__name__)
@@ -19,10 +18,6 @@ def authenticate(func: Callable) -> Callable:
 
 
 class AuthenticationService:
-    @staticmethod
-    def create(settings: Settings) -> AuthenticationService:
-        return AuthenticationService()
-
     async def get_endpoint_by_certificate_dn(
         self, certificate_dn: str, db_session
     ) -> EndPoint | None:
