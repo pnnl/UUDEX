@@ -396,9 +396,12 @@ SENTINEL = "sentinel-4f2a9c"
 )
 def test_a_bad_trusted_list_stops_startup_without_echoing_the_value(tmp_path, value):
     result = import_app_in_a_fresh_process(tmp_path, value)
+    output = result.stdout + result.stderr
     assert result.returncode == 1
-    assert SENTINEL not in result.stdout + result.stderr
-    assert "trusted_proxy_hosts" in result.stdout + result.stderr
+    # A deliberate exit, not a crash further on: the log names the setting, no traceback.
+    assert "Traceback" not in output
+    assert "trusted_proxy_hosts" in output
+    assert SENTINEL not in output
 
 
 def test_a_valid_trusted_list_starts_without_the_empty_warning(tmp_path):
