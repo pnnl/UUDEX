@@ -1,5 +1,7 @@
 #!/usr/bin/env bats
 
+bats_require_minimum_version 1.5.0
+
 SCRIPTS="$BATS_TEST_DIRNAME/.."
 REPO_GITIGNORE="$BATS_TEST_DIRNAME/../../../.gitignore"
 PG_SCRIPT="$SCRIPTS/generate-certs-from-existing-postgres.sh"
