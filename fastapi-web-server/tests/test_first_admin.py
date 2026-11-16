@@ -154,9 +154,7 @@ async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env
     pid = await seed(admin_cn, admin=True)
     await seed(name("admin"), admin=True, participant_id=pid)
     async with trusted_client() as c:
-        response = await c.post(
-            "/endpoint/", json=body(pid), headers=identity_headers(admin_cn)
-        )
+        response = await c.post("/endpoint/", json=body(pid), headers=identity_headers(admin_cn))
     assert response.status_code == 200
     rows = [e for e in await all_endpoints() if e.certificate_dn == NEW_CN]
     assert len(rows) == 1
