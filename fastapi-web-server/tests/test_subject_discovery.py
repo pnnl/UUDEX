@@ -3,6 +3,8 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from httpx import AsyncClient
 
+from conftest import identity_headers
+
 XFAIL_18_ADMIN = pytest.mark.xfail(
     strict=True, reason="#18: is_admin read on None, no authenticated user is produced"
 )
@@ -33,11 +35,7 @@ async def test_discover_subjects_v1_no_auth(client: AsyncClient):
 async def test_discover_subjects_with_mock_auth(client: AsyncClient):
     """Test discover subjects endpoint with mocked authentication"""
     # Mock the certificate validation middleware
-    headers = {
-        "X-Client-Cert-Subject": "CN=testuser,O=Test Org,C=US",
-        "X-Client-Cert-Issuer": "CN=Test CA",
-        "X-Client-Cert-Serial": "12345",
-    }
+    headers = identity_headers("testuser")
 
     # Mock the authentication service and repositories
     with patch("uudex_server.services.authentication_service.get_request_user") as mock_auth:
@@ -75,11 +73,7 @@ async def test_discover_subjects_with_mock_auth(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_discover_subjects_admin_with_mock_auth(client: AsyncClient):
     """Test discover subjects endpoint with mocked admin authentication"""
-    headers = {
-        "X-Client-Cert-Subject": "CN=adminuser,O=Test Org,C=US",
-        "X-Client-Cert-Issuer": "CN=Test CA",
-        "X-Client-Cert-Serial": "12345",
-    }
+    headers = identity_headers("adminuser")
 
     # Mock the authentication service and repositories for admin user
     with patch("uudex_server.services.authentication_service.get_request_user") as mock_auth:
@@ -111,11 +105,7 @@ async def test_discover_subjects_admin_with_mock_auth(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_discover_subjects_invalid_cert(client: AsyncClient):
     """Test discover subjects endpoint with invalid certificate"""
-    headers = {
-        "X-Client-Cert-Subject": "",  # Empty subject
-        "X-Client-Cert-Issuer": "CN=Test CA",
-        "X-Client-Cert-Serial": "12345",
-    }
+    headers = identity_headers(subject="")
 
     response = await client.get("/subjects/discover", headers=headers)
     assert response.status_code == 401
@@ -125,11 +115,7 @@ async def test_discover_subjects_invalid_cert(client: AsyncClient):
 @pytest.mark.asyncio
 async def test_discover_subjects_missing_cn(client: AsyncClient):
     """Test discover subjects endpoint with certificate missing CN"""
-    headers = {
-        "X-Client-Cert-Subject": "O=Test Org,C=US",  # No CN field
-        "X-Client-Cert-Issuer": "CN=Test CA",
-        "X-Client-Cert-Serial": "12345",
-    }
+    headers = identity_headers(subject="O=Test Org,C=US")
 
     response = await client.get("/subjects/discover", headers=headers)
     assert response.status_code == 401

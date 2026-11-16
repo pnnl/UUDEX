@@ -53,9 +53,10 @@ services:
       - postgres_dsn
       - messagebus_connection
       - x_ssl_cert
+    # --no-proxy-headers: uvicorn must not let X-Forwarded-For replace the TCP peer the gate checks.
     # Bind to the app address only: the server also sits on the db network, and PostgreSQL
     # (or anything else there) must not reach the port that trusts the client-cert header.
-    command: ["uvicorn", "uudex_server.main:app", "--host", "172.29.77.10", "--port", "8000"]
+    command: ["uvicorn", "uudex_server.main:app", "--host", "172.29.77.10", "--port", "8000", "--no-proxy-headers"]
     networks:
       app:
         ipv4_address: 172.29.77.10

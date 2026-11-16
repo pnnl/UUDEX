@@ -23,7 +23,7 @@ echo "Server version: ${SERVER_VERSION}"
 # Check if server is running
 if ! curl -s "${SERVER_URL}/openapi.json" > /dev/null 2>&1; then
     echo "Error: UUDEX server not running at ${SERVER_URL}"
-    echo "Start the server first with: uvicorn src.uudex_server.main:app --host 0.0.0.0 --port ${PORT}"
+    echo "Start the server first with: uvicorn src.uudex_server.main:app --host 0.0.0.0 --port ${PORT} --no-proxy-headers"
     echo ""
     echo "Usage: $0 [PORT]"
     echo "  PORT: Server port (default: 8000)"

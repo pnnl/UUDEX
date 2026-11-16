@@ -27,7 +27,7 @@ Settings come from, in order of priority: environment variables, a `.env` file (
 
 Start the server (no secrets on the command line):
 
-    uvicorn uudex_server.main:app --host 127.0.0.1 --port 8000
+    uvicorn uudex_server.main:app --host 127.0.0.1 --port 8000 --no-proxy-headers
 
 The tests read `tests/.env.test` only.
 
