@@ -1166,7 +1166,9 @@ assert_refusal_changes_nothing() {
     run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
     [ "$status" -eq 0 ]
     [[ "$output" == *"Using existing server certificate localhost.crt"* ]]
-    [ -s "$d/bob.key" ] && [ -s "$d/bob.crt" ] && [ -s "$d/bob.p12" ]
+    [ -s "$d/bob.key" ]
+    [ -s "$d/bob.crt" ]
+    [ -s "$d/bob.p12" ]
     run openssl verify -CAfile "$d/ca.crt" "$d/bob.crt"
     [ "$status" -eq 0 ]
     # Every file that was there is byte-identical, except the serial counter.
@@ -1243,17 +1245,18 @@ assert_refusal_changes_nothing() {
     [ "$(snapshot "$d")" = "$before" ]
 }
 
-@test "existing files: a run that fails at the server key adds nothing and leaves the serial counter alone" {
+@test "existing files: a run that fails at the server certificate adds nothing and leaves the serial counter alone" {
     cd "$WORKDIR"
     local d="$TT/o" before real
     make_full_set "$d"
     before=$(snapshot "$d")
     real=$(command -v openssl)
     mkdir -p "$TT/failsrv"
-    printf '#!/bin/sh\ncase "$*" in *localhost.key*) exit 1 ;; esac\nexec %s "$@"\n' "$real" > "$TT/failsrv/openssl"
+    printf '#!/bin/sh\ncase "$*" in *"x509 -req"*server.crt*) exit 1 ;; esac\nexec %s "$@"\n' "$real" > "$TT/failsrv/openssl"
     chmod +x "$TT/failsrv/openssl"
-    PATH="$TT/failsrv:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --force
+    PATH="$TT/failsrv:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --domain new.example
     [ "$status" -ne 0 ]
+    [[ "$output" == *"step failed: sign server certificate"* ]]
     [ "$(snapshot "$d")" = "$before" ]
 }
 
@@ -1334,7 +1337,8 @@ assert_refusal_changes_nothing() {
     cd "$WORKDIR"
     local d="$TT/o"
     make_full_set "$d"
-    [ -f "$d/.uudex-certs" ] && [ ! -L "$d/.uudex-certs" ]
+    [ -f "$d/.uudex-certs" ]
+    [ ! -L "$d/.uudex-certs" ]
     run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
     [ "$status" -eq 0 ]
     fake_openssl_failing
