@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import logging
 import os
@@ -34,6 +35,25 @@ def _anchor_sqlite(dsn: str) -> str:
     return url.render_as_string(hide_password=False)
 
 
+def _check_trusted_host(index: int, entry: object) -> None:
+    """Refuse an entry that would load as a different address or could never match a peer."""
+    where = f"trusted_proxy_hosts entry {index}"
+    # A number or boolean would be read as an address; only a quoted string is one.
+    if not isinstance(entry, str):
+        raise ValueError(f"{where} must be an IP address written as a JSON string")
+    # The gate compares unscoped addresses, so a scope id (fe80::1%eth0) never matches.
+    if "%" in entry:
+        raise ValueError(f"{where} must not carry an IPv6 scope id")
+    try:
+        address = ipaddress.ip_address(entry)
+    except ValueError:
+        return  # the address type reports the malformed entry
+    # Peers reported as ::ffff:a.b.c.d are matched by their IPv4 form, so a mapped entry
+    # never matches. Refused rather than rewritten, so the operator sees the setting is wrong.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        raise ValueError(f"{where} is an IPv4-mapped IPv6 address; write the IPv4 address")
+
+
 class Settings(BaseSettings):
     x_ssl_cert: str
     db_uri: str = Field(alias="postgres_dsn")
@@ -44,9 +64,15 @@ class Settings(BaseSettings):
 
     @field_validator("trusted_proxy_hosts", mode="before")
     @classmethod
-    def _decode_json_list(cls, value: object) -> object:
+    def _check_trusted_hosts(cls, value: object) -> object:
         # The test loader passes the raw file text; the environment sources decode it already.
-        return json.loads(value) if isinstance(value, str) else value
+        if isinstance(value, str):
+            value = json.loads(value)
+        if not isinstance(value, list):
+            raise ValueError("trusted_proxy_hosts must be a JSON list of IP address strings")
+        for index, entry in enumerate(value):
+            _check_trusted_host(index, entry)
+        return value
 
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",

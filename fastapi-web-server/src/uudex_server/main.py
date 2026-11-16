@@ -1,10 +1,10 @@
 import ipaddress
 import sys
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
@@ -33,9 +33,19 @@ def initialize_settings() -> Settings:
         raise
 
 
+def warn_if_no_trusted_proxies(hosts: Sequence[object]) -> None:
+    if not hosts:
+        logger.warning(
+            "trusted_proxy_hosts is empty: no peer is trusted, so every non-public request "
+            "will be refused. Set TRUSTED_PROXY_HOSTS to a JSON list of the verifying "
+            "proxy's addresses."
+        )
+
+
 # Initialize settings
 settings = initialize_settings()
 logger.info("Settings initialized successfully")
+warn_if_no_trusted_proxies(settings.trusted_proxy_hosts)
 
 from uudex_server.routes import add_routers
 
@@ -87,7 +97,9 @@ def _is_trusted_peer(peer: str | None) -> bool:
 
 
 @app.middleware("http")
-async def check_ssl_cert(request: Request, call_next):
+async def check_ssl_cert(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     """
     This middleware method uses the request to determine whether or not a user
     is authorized.
@@ -161,7 +173,9 @@ async def check_ssl_cert(request: Request, call_next):
 
 
 @app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
+async def add_process_time_header(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
     start_time = time.time()
     response = await call_next(request)
     process_time = time.time() - start_time
