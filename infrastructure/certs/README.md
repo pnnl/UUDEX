@@ -47,11 +47,18 @@ with a message naming the file and line, before anything is written.
 Subject values (`C`, `ST`, `L`, `O`, `CA_CN`, and the matching options, the
 `ORG` argument and the client name) may not contain `/`, `\`, `#`, `$`, `"`,
 `'` or `+`, or a control character, because openssl reads them as syntax and
-the CA, server and client subjects would differ. `L = Richland # city` is
-refused, not stored. Server names (`DOMAINS` and `--domain`) must be DNS names
-(letters, digits, `.`, `-`, `_`, `*`), IPv4 addresses (0 to 255, no leading
-zeros) or IPv6 addresses (written with `:`, no dotted tail); an IP address
-becomes an IP entry in the certificate, not a DNS name.
+the CA, server and client subjects would differ. They also may not start or
+end with a space or tab, which the server request would drop, or contain a
+non-ASCII character, which openssl would store double-encoded; use ASCII only.
+`L = Richland # city` is refused, not stored. Server names (`DOMAINS` and
+`--domain`) must be DNS names (letters, digits, `.`, `-`, `_`, `*`), IPv4
+addresses (0 to 255, no leading zeros) or IPv6 addresses (written with `:`, no
+dotted tail); an IP address becomes an IP entry in the certificate, not a DNS
+name. A DNS name has no empty label (so no leading, trailing or doubled dot),
+no label over 63 characters or starting or ending with `-`, and `*` only as
+the whole first label (`*.example.com`). A name made only of digits and dots
+must be a valid IPv4 address. The first name becomes the certificate common
+name, so it may be at most 64 characters.
 
 Precedence: command line, then config file, then built-in default. For the
 output folder it is `-o`, then `UUDEX_CERTS`, then `OUTPUT_DIR`, then
