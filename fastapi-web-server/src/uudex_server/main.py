@@ -1,3 +1,4 @@
+import ipaddress
 import sys
 import time
 from collections.abc import AsyncIterator
@@ -67,6 +68,24 @@ add_routers(app)
 ########################################################################################################################################################
 
 
+PUBLIC_PATHS = frozenset({"/docs", "/openapi.json"})
+UNTRUSTED_PEER_BODY = "Request not from a trusted proxy."
+
+
+def _is_trusted_peer(peer: str | None) -> bool:
+    """True only for a peer listed in trusted_proxy_hosts; anything unparsable is refused."""
+    if peer is None:
+        return False
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    # A dual-stack socket reports an IPv4 peer as ::ffff:a.b.c.d.
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address in settings.trusted_proxy_hosts
+
+
 @app.middleware("http")
 async def check_ssl_cert(request: Request, call_next):
     """
@@ -75,15 +94,22 @@ async def check_ssl_cert(request: Request, call_next):
     """
     logger.debug("Checking SSL Cert")
 
-    # Check for Caddy's client certificate headers
+    # Exact matches: a prefix test would also expose /docsx and /statusx.
+    if request.url.path in PUBLIC_PATHS:
+        logger.debug("Public endpoint accessed, skipping certificate check.")
+        return await call_next(request)
+
+    # The identity headers are believed only from a trusted proxy, and the peer is checked
+    # before any of them is read, so an untrusted peer cannot make them reach the log or parser.
+    peer = request.client.host if request.client else None
+    if not _is_trusted_peer(peer):
+        logger.warning(f"Refused request from untrusted peer {peer}")
+        return JSONResponse(status_code=401, content=UNTRUSTED_PEER_BODY)
+
+    # Check for the verifying proxy's client certificate headers
     cert_subject = request.headers.get("X-Client-Cert-Subject")
     cert_issuer = request.headers.get("X-Client-Cert-Issuer")
     cert_serial = request.headers.get("X-Client-Cert-Serial")
-    # Check if this is a public endpoint
-    public_paths = ["/docs", "/openapi.json", "/health", "/status"]
-    if any(request.url.path.startswith(path) for path in public_paths):
-        logger.debug("Public endpoint accessed, skipping certificate check.")
-        return await call_next(request)
     if not cert_subject:
         return JSONResponse(status_code=401, content="No certificate detected.")
 

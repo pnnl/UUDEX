@@ -26,4 +26,5 @@ USER 10001:10001
 EXPOSE 8000
 # Secrets are files under /run/secrets (UUDEX_SECRETS_DIR); nothing secret is passed here.
 # They must be readable by uid 10001 (owner 10001, mode 0400), or startup fails.
-CMD ["uvicorn", "uudex_server.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# --no-proxy-headers: X-Forwarded-For must not replace the TCP peer the trusted-peer gate checks.
+CMD ["uvicorn", "uudex_server.main:app", "--host", "0.0.0.0", "--port", "8000", "--no-proxy-headers"]

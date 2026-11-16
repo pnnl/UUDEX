@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import sys
@@ -5,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import dotenv_values
-from pydantic import Field
+from pydantic import Field, IPvAnyAddress, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -37,6 +38,15 @@ class Settings(BaseSettings):
     x_ssl_cert: str
     db_uri: str = Field(alias="postgres_dsn")
     messagebus_connection: str
+    # Peers allowed to supply the identity headers. Empty trusts no peer, so every
+    # non-public request is refused. Set as a JSON list, for example '["172.29.77.20"]'.
+    trusted_proxy_hosts: list[IPvAnyAddress] = Field(default_factory=list)
+
+    @field_validator("trusted_proxy_hosts", mode="before")
+    @classmethod
+    def _decode_json_list(cls, value: object) -> object:
+        # The test loader passes the raw file text; the environment sources decode it already.
+        return json.loads(value) if isinstance(value, str) else value
 
     model_config = SettingsConfigDict(
         env_file_encoding="utf-8",
