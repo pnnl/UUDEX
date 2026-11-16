@@ -1,7 +1,6 @@
 """
 FastAPI Dependencies for authentication and authorization
 """
-import logging
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request
@@ -11,8 +10,6 @@ from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.services.authentication_service import AuthenticationService
 from uudex_server.services.database_service import get_db
-
-_log = logging.getLogger(__name__)
 
 
 async def get_current_user(
