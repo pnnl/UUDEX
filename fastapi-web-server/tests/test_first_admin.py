@@ -3,6 +3,7 @@
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -171,6 +172,7 @@ async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env
     admin_cn = name("admin")
     pid = await seed(admin_cn, admin=True)
     await seed(name("admin"), admin=True, participant_id=pid)
+    before = datetime.now(UTC).replace(microsecond=0)
     async with trusted_client() as c:
         response = await c.post("/endpoint/", json=body(pid), headers=identity_headers(admin_cn))
     assert response.status_code == 200
@@ -184,7 +186,9 @@ async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env
     assert row.active_sw == "Y"
     assert row.participant_id == pid
     assert uuid.UUID(row.endpoint_uuid).version == 4
-    assert row.create_datetime is not None
+    # SQLite stamps whole seconds, so the window is widened by the truncated second.
+    created = row.create_datetime.replace(tzinfo=row.create_datetime.tzinfo or UTC)
+    assert before <= created <= datetime.now(UTC)
     returned = response.json()
     assert returned["endpoint_id"] == row.endpoint_id
     assert returned["endpoint_uuid"] == row.endpoint_uuid
