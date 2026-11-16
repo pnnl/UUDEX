@@ -901,7 +901,7 @@ assert_subject_refused() {
     cd "$WORKDIR"
     fake_openssl_failing
     local i=0 bad
-    for bad in 999.1.1.1 010.0.0.1 1.2.3.4/24 "foo bar" ::: 1:2:3:4:5:6:7:8: g::1 "a\$b" "a\"b"; do
+    for bad in 999.1.1.1 010.0.0.1 1.2.3.4/24 "foo bar" ::: 1:2:3:4:5:6:7:8: g::1 1:2:3:4:5:6:7::8 1:2:3 12345::1 "a\$b" "a\"b"; do
         i=$((i + 1))
         PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/d$i" --domain "$bad"
         [ "$status" -ne 0 ] || { echo "accepted --domain $bad"; return 1; }
@@ -914,6 +914,17 @@ assert_subject_refused() {
         [[ "$output" == *"$CONF line 1: DOMAINS '$bad' is not a"* ]] || { echo "DOMAINS $bad: $output"; return 1; }
         [ ! -e "$BATS_TEST_TMPDIR/e$i" ]
     done
+}
+
+@test "domains: a newline inside an IPv6-looking name is refused and no extra SAN entry is made" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/nl" \
+        --domain host.example --domain $'::1\nDNS.9 = evil.example'
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is not a valid IPv6 address"* ]]
+    [[ "$output" != *"step failed"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/nl" ]
 }
 
 @test "domains: valid names and addresses are accepted, including a wildcard, 0.0.0.0 and 255.255.255.255" {
