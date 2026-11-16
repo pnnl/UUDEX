@@ -840,7 +840,6 @@ assert_subject_refused() {
 # letter, and a byte that is not valid UTF-8.
 assert_non_ascii_refused() {
     local locale="$1" i=0 opt key v
-    cd "$WORKDIR"
     fake_openssl_failing
     for v in "$(printf 'Caf\303\251')" "$(printf 'a\377b')"; do
         for opt in --country --state --city --org --ca-name; do
@@ -875,11 +874,13 @@ assert_non_ascii_refused() {
 }
 
 @test "subject values: a non-ASCII value is refused on the command line and in the config, writing nothing (C locale)" {
+    cd "$WORKDIR"
     assert_non_ascii_refused C
 }
 
 @test "subject values: a non-ASCII value is refused the same way under a UTF-8 locale" {
     locale -a | /usr/bin/grep -qix 'en_US.utf-\?8' || skip "en_US.UTF-8 locale is not installed"
+    cd "$WORKDIR"
     assert_non_ascii_refused en_US.UTF-8
 }
 
