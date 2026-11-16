@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
-from uudex_server.core.dependencies import AdminUserDep, CurrentUserDep, SessionDep, UserDep
+from uudex_server.core.dependencies import CurrentUserDep, SessionDep, UserDep, get_admin_user
 from uudex_server.models import (
     BulkCertificateOperation,
     BulkCertificateResult,
@@ -84,11 +84,10 @@ async def get_endpoint_by_id(endpoint_id: int, session: SessionDep, user: UserDe
     return endpoint
 
 
-@endpoint_router.post("/", operation_id="create_endpoint")
+@endpoint_router.post("/", operation_id="create_endpoint", dependencies=[Depends(get_admin_user)])
 async def create_endpoint(
     endpoint_create: EndPointCreate,
     session: SessionDep,
-    user: AdminUserDep,
 ) -> EndPoint:
     """
     Create a new endpoint. Only UUDEX administrators may call this.
