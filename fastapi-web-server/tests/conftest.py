@@ -69,22 +69,33 @@ def read_cert_file(filename: str) -> str:
         return f.read().strip()
 
 
+def identity_headers(cn: str | None = None, *, subject: str | None = None) -> dict[str, str]:
+    """Identity headers as the verifying proxy sends them; the one place tests build them."""
+    if subject is None:
+        subject = f"CN={cn},O=Test Org,C=US"
+    return {
+        "X-Client-Cert-Subject": subject,
+        "X-Client-Cert-Issuer": "CN=Test CA",
+        "X-Client-Cert-Serial": "12345",
+    }
+
+
 @pytest.fixture
 async def admin_headers():
     """Headers for admin user"""
-    return {"x-ssl-cert": "-----BEGIN CERTIFICATE-----\nADMIN_TEST_CERT\n-----END CERTIFICATE-----"}
+    return identity_headers("admin")
 
 
 @pytest.fixture
 async def non_admin_headers():
     """Headers for non-admin user"""
-    return {"x-ssl-cert": "-----BEGIN CERTIFICATE-----\nUSER_TEST_CERT\n-----END CERTIFICATE-----"}
+    return identity_headers("user")
 
 
 @pytest.fixture
 async def invalid_cert_headers():
-    """Headers with invalid certificate"""
-    return {"x-ssl-cert": "-----BEGIN CERTIFICATE-----INVALID-----END CERTIFICATE-----"}
+    """Headers whose subject carries no common name"""
+    return identity_headers(subject="O=Test Org,C=US")
 
 
 @pytest.fixture
