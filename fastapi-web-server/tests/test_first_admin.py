@@ -52,6 +52,24 @@ async def empty_endpoint_table(setup_test_env: object) -> AsyncIterator[None]:
     await _delete_own_rows()
 
 
+@pytest.fixture
+async def only_my_endpoints(empty_endpoint_table: None) -> AsyncIterator[None]:
+    """An endpoint table holding only what the test seeds.
+
+    has_any_admin_endpoints reads the whole table, so a row left by an earlier test file would
+    change its answer. A whole-table delete is used instead of a rollback because every
+    get_db_session block commits on exit, so there is no outer transaction to roll back.
+    """
+
+    async def clear_table() -> None:
+        async with get_db_session() as session:
+            await session.execute(delete(m.EndPoint))
+
+    await clear_table()
+    yield
+    await clear_table()
+
+
 def name(prefix: str) -> str:
     """A fresh common name, so no test meets another test's cached identity."""
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
@@ -180,6 +198,7 @@ async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env
     ("admins", "inactive_admins", "expected"),
     [(0, 0, False), (1, 0, True), (2, 0, True), (0, 1, False), (1, 1, True)],
 )
+@pytest.mark.usefixtures("only_my_endpoints")
 async def test_has_any_admin_endpoints_counts_active_admins(
     setup_test_env, admins, inactive_admins, expected
 ):
