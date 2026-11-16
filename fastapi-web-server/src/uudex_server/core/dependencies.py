@@ -20,7 +20,6 @@ async def get_current_user(
 ) -> AuthenticatedUser:
     """
     Get the currently authenticated user from the certificate CN stored in request.state.
-    Uses the authentication service cache for performance.
     """
     cert_cn = getattr(request.state, "cert_cn", None)
 
@@ -29,7 +28,6 @@ async def get_current_user(
             status_code=HTTP_401_UNAUTHORIZED, detail="Unauthorized: No certificate found"
         )
 
-    # Use the authentication service to get the endpoint (with caching)
     from uudex_server.core.settings import get_settings
 
     settings = get_settings()

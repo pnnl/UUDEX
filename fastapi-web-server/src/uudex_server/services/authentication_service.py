@@ -1,83 +1,13 @@
 from __future__ import annotations
 
 import logging
-import threading
-import time
 from collections.abc import Callable
 from functools import wraps
 
 from uudex_server.core.settings import Settings
-from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.models.endpoint_models import EndPoint
 
 _log = logging.getLogger(__name__)
-
-
-class EndpointCache:
-    """
-    A simple cache to store endpoint information based on the certificate common name (CN).
-    This is used to avoid repeated database lookups for the same endpoint.
-    """
-
-    def __init__(self, max_size: int = 100, ttl_seconds: int = 3600):
-        """
-        Initialize the cache with a maximum size and time-to-live (TTL) for cached items.
-        """
-        self.max_size = max_size
-        self.ttl_seconds = ttl_seconds
-        self.timestamps: dict[str, float] = {}
-        self._cache: dict[str, EndPoint] = {}
-        self._lock = threading.RLock()
-
-    def _is_expired(self, key: str) -> bool:
-        if key not in self.timestamps:
-            return True
-        return time.time() - self.timestamps[key] > self.ttl_seconds
-
-    def _cleanup_expired(self):
-        """Remove expired entries"""
-        current_time = time.time()
-        expired_keys = [
-            key
-            for key, timestamp in self.timestamps.items()
-            if current_time - timestamp > self.ttl_seconds
-        ]
-        for key in expired_keys:
-            self._cache.pop(key, None)
-            self.timestamps.pop(key, None)
-
-    def _evict_oldest(self):
-        """Remove oldest entry if cache is full"""
-        if len(self._cache) >= self.max_size:
-            oldest_key = min(self.timestamps.keys(), key=self.timestamps.get)
-            self._cache.pop(oldest_key, None)
-            self.timestamps.pop(oldest_key, None)
-
-    def get(self, key: str) -> EndPoint | None:
-        with self._lock:
-            if key in self._cache and not self._is_expired(key):
-                return self._cache[key]
-            return None
-
-    def set(self, key: str, value: EndPoint):
-        with self._lock:
-            self._cleanup_expired()
-            self._evict_oldest()
-            self._cache[key] = value
-            self.timestamps[key] = time.time()
-
-    def invalidate(self, key: str):
-        with self._lock:
-            self._cache.pop(key, None)
-            self.timestamps.pop(key, None)
-
-    def clear(self):
-        with self._lock:
-            self._cache.clear()
-            self.timestamps.clear()
-
-
-authentication_cache = EndpointCache(max_size=100, ttl_seconds=3600)
 
 
 def authenticate(func: Callable) -> Callable:
@@ -97,14 +27,9 @@ class AuthenticationService:
         self, certificate_dn: str, db_session
     ) -> EndPoint | None:
         """
-        Get endpoint by certificate DN, using cache first, then database lookup.
+        Get the active endpoint of an active participant for a certificate DN.
+        Read on every request so a deactivated caller loses access at once.
         """
-        # Check cache first
-        cached_endpoint = authentication_cache.get(certificate_dn)
-        if cached_endpoint:
-            return cached_endpoint
-
-        # Query database using the endpoint repository pattern
         from uudex_server.repos.endpoint_repository import EndpointRepository
 
         repo = EndpointRepository(db_session)
@@ -117,8 +42,6 @@ class AuthenticationService:
         if endpoint.participant.active_sw.upper() != "Y":
             return None
 
-        # Cache the endpoint
-        authentication_cache.set(certificate_dn, endpoint)
         return endpoint
 
 
