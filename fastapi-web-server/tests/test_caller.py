@@ -109,6 +109,7 @@ async def test_unknown_caller_is_401_on_subjects_and_subscriptions(cn):
     assert subjects.status_code == 401
     assert subscriptions.status_code == 401
     assert subjects.json()["detail"] == "Unauthorized: Invalid certificate"
+    assert subscriptions.json()["detail"] == "Unauthorized: Invalid certificate"
 
 
 async def test_admin_lists_every_endpoint(cn):
