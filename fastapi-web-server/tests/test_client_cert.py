@@ -393,6 +393,10 @@ async def test_a_client_certificate_without_basic_constraints_names_the_caller(a
     assert response.json()["endpoint_uuid"] == expected
 
 
+def test_the_size_limit_is_16_kib():
+    assert MAX_HEADER_CHARS == 16384
+
+
 def _padded_to(length: int, leaf_b64: str) -> str:
     return leaf_b64 + "," + "A" * (length - len(leaf_b64) - 1)
 
