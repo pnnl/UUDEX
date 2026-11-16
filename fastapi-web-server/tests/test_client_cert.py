@@ -197,6 +197,32 @@ def _bit_string_cn_der() -> bytes:
     return der.replace(cn_utf8, b"\x03" + cn_utf8[1:], 1)
 
 
+def _san_der(tag: int) -> bytes:
+    """A leaf whose SubjectAlternativeName holds one name of context tag `tag`, not a dNSName."""
+    san = x509.SubjectAlternativeName([x509.DNSName("zz.test")])
+    der = _der(make_leaf([("CN", "san")], extra_extensions=(san,)))
+    old = bytes.fromhex("8207") + b"zz.test"
+    assert der.count(old) == 1
+    return der.replace(old, bytes([tag]) + old[1:], 1)
+
+
+def _x400_address_der() -> bytes:
+    return _san_der(0xA3)
+
+
+def _edi_party_name_der() -> bytes:
+    return _san_der(0xA5)
+
+
+def _unknown_tls_feature_der() -> bytes:
+    """A leaf whose TLS Feature extension lists feature 99, which the library has no name for."""
+    feature = x509.TLSFeature([x509.TLSFeatureType.status_request])
+    der = _der(make_leaf([("CN", "feat")], extra_extensions=(feature,)))
+    old = bytes.fromhex("020105")
+    assert der.count(old) == 1
+    return der.replace(old, bytes.fromhex("020163"), 1)
+
+
 def test_the_empty_cn_fixture_really_has_an_empty_cn():
     cert = x509.load_der_x509_certificate(_empty_cn_der())
     assert [a.value for a in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)] == [""]
@@ -216,6 +242,17 @@ def test_the_bit_string_cn_fixture_trips_the_library():
     cert = x509.load_der_x509_certificate(_bit_string_cn_der())
     with pytest.raises(TypeError):
         cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+
+
+@pytest.mark.parametrize("build", [_x400_address_der, _edi_party_name_der])
+def test_the_unsupported_alt_name_fixtures_trip_the_library(build):
+    with pytest.raises(x509.UnsupportedGeneralNameType):
+        x509.load_der_x509_certificate(build()).extensions  # noqa: B018
+
+
+def test_the_unknown_tls_feature_fixture_trips_the_library():
+    with pytest.raises(KeyError):
+        x509.load_der_x509_certificate(_unknown_tls_feature_der()).extensions  # noqa: B018
 
 
 SECRET = f"leak-{uuid.uuid4().hex}"
@@ -267,6 +304,9 @@ REFUSALS = {
     "duplicate_extension": (_b64(_duplicate_extension_der()), INVALID_CERT_BODY, "not_certificate"),
     "version_4": (_b64(_version_4_der()), INVALID_CERT_BODY, "not_certificate"),
     "bit_string_cn": (_b64(_bit_string_cn_der()), INVALID_CERT_BODY, "not_certificate"),
+    "x400_address_alt_name": (_b64(_x400_address_der()), INVALID_CERT_BODY, "not_certificate"),
+    "edi_party_name_alt_name": (_b64(_edi_party_name_der()), INVALID_CERT_BODY, "not_certificate"),
+    "unknown_tls_feature": (_b64(_unknown_tls_feature_der()), INVALID_CERT_BODY, "not_certificate"),
     "oversize": (
         forwarded_chain(leaf_for("big")) + "," + "A" * MAX_HEADER_CHARS,
         INVALID_CERT_BODY,

@@ -93,6 +93,7 @@ def _build_cert(
     *,
     is_ca: bool | None,
     key_usage: x509.KeyUsage | None = None,
+    extra_extensions: tuple[x509.ExtensionType, ...] = (),
 ) -> x509.Certificate:
     """`is_ca=None` leaves BasicConstraints out, as `openssl x509 -req` does for a client."""
     now = datetime.datetime.now(datetime.UTC)
@@ -111,6 +112,8 @@ def _build_cert(
         )
     if key_usage is not None:
         builder = builder.add_extension(key_usage, critical=True)
+    for extension in extra_extensions:
+        builder = builder.add_extension(extension, critical=False)
     return builder.sign(signing_key, hashes.SHA256())
 
 
@@ -143,15 +146,23 @@ def make_leaf(
     *,
     is_ca: bool | None = False,
     usage: x509.KeyUsage | None = None,
+    extra_extensions: tuple[x509.ExtensionType, ...] = (),
 ) -> x509.Certificate:
     """A cert signed by the test CA, with exactly the subject attributes given.
 
-    The defaults make a leaf; `is_ca=None` omits BasicConstraints and `usage` adds KeyUsage.
+    The defaults make a leaf; `is_ca=None` omits BasicConstraints, `usage` adds KeyUsage and
+    `extra_extensions` adds more non-critical extensions.
     """
     ca_key, ca_cert = ca_pair()
     key = ec.generate_private_key(ec.SECP256R1())
     return _build_cert(
-        _name(attrs), ca_cert.subject, key.public_key(), ca_key, is_ca=is_ca, key_usage=usage
+        _name(attrs),
+        ca_cert.subject,
+        key.public_key(),
+        ca_key,
+        is_ca=is_ca,
+        key_usage=usage,
+        extra_extensions=extra_extensions,
     )
 
 

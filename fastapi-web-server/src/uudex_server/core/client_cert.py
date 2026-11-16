@@ -23,12 +23,6 @@ FORWARDED_CERT_HEADER = "X-Forwarded-Tls-Client-Cert"
 MAX_HEADER_CHARS = 16384
 
 
-# cryptography reports a bad certificate with no common base class: ValueError for most
-# malformed DER, InvalidVersion for a version it does not know, DuplicateExtension from the
-# lazy extension parse, and TypeError from a name attribute of an unsupported string type.
-_PARSE_ERRORS = (ValueError, TypeError, x509.InvalidVersion, x509.DuplicateExtension)
-
-
 class ClientCertError(Exception):
     """The forwarded certificate cannot name a caller; `reason` is safe to log."""
 
@@ -80,7 +74,8 @@ def parse_forwarded_cert(value: str | None) -> ClientCert:
         subject = cert.subject.rfc4514_string()
         issuer = cert.issuer.rfc4514_string()
         serial = cert.serial_number
-    except _PARSE_ERRORS:
+    except Exception:
+        # cryptography has no common base class for a bad certificate; every failure here is one.
         raise ClientCertError("not_certificate") from None
     # The proxy sends the leaf first; a CA in that slot means a wrong order, never a caller.
     # A CA without BasicConstraints still declares itself through KeyUsage.
