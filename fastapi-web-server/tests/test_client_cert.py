@@ -132,6 +132,52 @@ VERSION_3 = bytes.fromhex("a003020102")
 VERSION_4 = bytes.fromhex("a003020103")
 
 
+def _der_header(der: bytes, at: int) -> tuple[int, int]:
+    """The header size and content length of the DER element starting at `at`."""
+    first = der[at + 1]
+    if first < 0x80:
+        return 2, first
+    count = first & 0x7F
+    return 2 + count, int.from_bytes(der[at + 2 : at + 2 + count], "big")
+
+
+def _der_length(length: int) -> bytes:
+    if length < 0x80:
+        return bytes([length])
+    raw = length.to_bytes((length.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(raw)]) + raw
+
+
+def _replace_element(der: bytes, old: bytes, new: bytes) -> bytes:
+    """Swap one whole DER element for another and fix the length of every parent."""
+    assert der.count(old) == 1
+    target = der.index(old)
+
+    def rewrite(at: int) -> bytes:
+        header, length = _der_header(der, at)
+        end = at + header + length
+        if at == target and end - at == len(old):
+            return new
+        children = []
+        child = at + header
+        while child < end:
+            child_header, child_length = _der_header(der, child)
+            child_end = child + child_header + child_length
+            contains = child <= target and target + len(old) <= child_end
+            children.append(rewrite(child) if contains else der[child:child_end])
+            child = child_end
+        body = b"".join(children)
+        return der[at : at + 1] + _der_length(len(body)) + body
+
+    return rewrite(0)
+
+
+def _empty_cn_der() -> bytes:
+    """A leaf whose CN is the empty string, which the builder refuses to make."""
+    cn = bytes.fromhex("300806035504030c0151")
+    return _replace_element(_der(make_leaf([("CN", "Q")])), cn, bytes.fromhex("300706035504030c00"))
+
+
 def _duplicate_extension_der() -> bytes:
     """A leaf whose extension list names KeyUsage twice (BasicConstraints retagged as it)."""
     leaf = make_leaf([("CN", "dup")], usage=key_usage(digital_signature=True))
@@ -149,6 +195,11 @@ def _bit_string_cn_der() -> bytes:
     der = _der(make_leaf([("CN", "\x00alice")]))
     assert der.count(cn_utf8) == 1
     return der.replace(cn_utf8, b"\x03" + cn_utf8[1:], 1)
+
+
+def test_the_empty_cn_fixture_really_has_an_empty_cn():
+    cert = x509.load_der_x509_certificate(_empty_cn_der())
+    assert [a.value for a in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)] == [""]
 
 
 def test_the_duplicate_extension_fixture_trips_the_library():
@@ -191,7 +242,7 @@ REFUSALS = {
         INVALID_CERT_BODY,
         "multiple_cn",
     ),
-    "empty_cn": (_b64(_der(make_leaf([("CN", "")]))), NO_CN_BODY, "no_cn"),
+    "empty_cn": (_b64(_empty_cn_der()), NO_CN_BODY, "no_cn"),
     "blank_cn": (_b64(_der(make_leaf([("CN", "  \t ")]))), NO_CN_BODY, "no_cn"),
     "control_character_in_cn": (
         _b64(_der(make_leaf([("CN", SECRET + "\x07")]))),
