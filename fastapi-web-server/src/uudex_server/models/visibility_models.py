@@ -19,9 +19,6 @@ class ParticipantVisibility(ParticipantVisibilityBase, table=True):
     )
 
     # exposed_by_participant: Optional[Participant] = Relationship(
-    #     back_populates="participant_visibility_exposed_by",
-    #     sa_relationship_kwargs={"foreign_keys": "ParticipantVisibility.exposed_by_participant_id"}
-    # )
 
 
 class ParticipantVisibilityCreate(ParticipantVisibilityBase):

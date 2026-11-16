@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from uudex_server.core.settings import Settings
 
-# from uudex_server.services.database_service import DatabaseService
-
 __services__: Services = None
 
 
@@ -22,11 +20,6 @@ class Services:
         :type config: Dict
         """
         ...
-        # self.db_service: DatabaseService = DatabaseService.create(settings)
-        # self.auth_service: AuthenticationService = AuthenticationService.create(settings)
-
-
-#        self.authz_service: AuthorizationService = AuthorizationService.create(config, self.auth_service)
 
 
 def get_services() -> Services:

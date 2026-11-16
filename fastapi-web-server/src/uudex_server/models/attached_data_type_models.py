@@ -19,11 +19,7 @@ class AttachedDataType(AttachedDataTypeBase, table=True):
 
 class AttachedDataTypeCreate(AttachedDataType):
     pass
-    # dataset_definition_id: int
-    # data_type_id: int
 
 
 class AttachedDataTypeDelete(AttachedDataType):
     pass
-    # dataset_definition_id: int
-    # data_type_id = int

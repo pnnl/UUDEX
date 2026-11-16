@@ -20,11 +20,7 @@ class DatasetBase(BaseModel):
 
 
 # class Dataset(DatasetBase, TimeStampMixin, table=True):
-#     __tablename__ = "dataset"
 #
-#     dataset_id: Optional[int] = Field(default=None, primary_key=True)
-#     owner_participant_id: int = Field(foreign_key="participant.participant_id", primary_key=True)
-#     subject_id: int = Field(foreign_key="subject.subject_id", primary_key=True)
 #
 #
 class DatasetCreate(DatasetBase):

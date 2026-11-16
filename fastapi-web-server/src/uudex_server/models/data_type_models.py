@@ -22,13 +22,6 @@ class DataType(DataTypeBase, TimeStampMixin, table=True):
     dataset_definitions: list["DatasetDefinition"] = Relationship(  # type: ignore
         back_populates="data_types", link_model=AttachedDataType
     )
-    # subject_uuid: str = Field(unique=True)
-    # subject_short_name: str
-    # subject_long_name: str
-    # description: str
-    # root_org_sw: bool
-    # active_sw: bool
-    # create_datetime: datetime = Field(default_factory=lambda: datetime.utcnow())
 
 
 class DataTypeCreate(DataTypeBase):
