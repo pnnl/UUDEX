@@ -69,7 +69,8 @@ def parse_forwarded_cert(value: str | None) -> ClientCert:
         try:
             is_ca = extensions.get_extension_for_class(x509.BasicConstraints).value.ca
         except x509.ExtensionNotFound:
-            # generate-certs.sh signs client certificates with no extensions at all.
+            # generate-certs.sh client certificates carry SubjectKeyIdentifier and
+            # AuthorityKeyIdentifier but no BasicConstraints.
             is_ca = False
         try:
             may_sign_certs = extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign
