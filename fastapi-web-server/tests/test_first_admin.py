@@ -1,11 +1,12 @@
 """POST /endpoint/ is for administrators only; nothing creates the first one through the API."""
 
 import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlmodel import delete, select
+from sqlmodel import delete, select, update
 
 import uudex_server.models as m
 from conftest import identity_headers
@@ -16,22 +17,39 @@ from uudex_server.services.database_service import get_db_session
 TRUSTED = "127.0.0.1"
 NEW_CN = "newcomer"
 
+# What these tests created, so cleanup removes only their own rows from the shared database.
+_seeded_cns: set[str] = set()
+_seeded_participant_ids: set[int] = set()
+
 
 @asynccontextmanager
-async def trusted_client():
+async def trusted_client() -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app, client=(TRUSTED, 54321))
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
 
+async def _delete_own_rows() -> None:
+    async with get_db_session() as session:
+        await session.execute(
+            delete(m.EndPoint).where(
+                m.EndPoint.certificate_dn.in_(_seeded_cns | {NEW_CN})
+                | m.EndPoint.participant_id.in_(_seeded_participant_ids)
+            )
+        )
+        await session.execute(
+            delete(m.Participant).where(m.Participant.participant_id.in_(_seeded_participant_ids))
+        )
+    _seeded_cns.clear()
+    _seeded_participant_ids.clear()
+
+
 @pytest.fixture(autouse=True)
-async def empty_endpoint_table(setup_test_env):
-    """The test database is shared and never reset, so these tests start and end with no endpoints."""
-    async with get_db_session() as session:
-        await session.execute(delete(m.EndPoint))
+async def empty_endpoint_table(setup_test_env: object) -> AsyncIterator[None]:
+    """The test database is shared and never reset, so these tests remove the rows they made."""
+    await _delete_own_rows()
     yield
-    async with get_db_session() as session:
-        await session.execute(delete(m.EndPoint))
+    await _delete_own_rows()
 
 
 def name(prefix: str) -> str:
@@ -39,8 +57,11 @@ def name(prefix: str) -> str:
     return f"{prefix}-{uuid.uuid4().hex[:8]}"
 
 
-async def seed(cn: str, *, admin: bool, active: bool = True, participant_id: int | None = None):
+async def seed(
+    cn: str, *, admin: bool, active: bool = True, participant_id: int | None = None
+) -> int:
     """Create an endpoint for `cn` (and a participant unless given); return its participant_id."""
+    _seeded_cns.add(cn)
     async with get_db_session() as session:
         if participant_id is None:
             participant = m.Participant(
@@ -53,6 +74,7 @@ async def seed(cn: str, *, admin: bool, active: bool = True, participant_id: int
             session.add(participant)
             await session.flush()
             participant_id = participant.participant_id
+            _seeded_participant_ids.add(participant_id)
         session.add(
             m.EndPoint(
                 endpoint_uuid=str(uuid.uuid4()),
@@ -74,7 +96,7 @@ async def all_endpoints() -> list[m.EndPoint]:
         return list((await session.execute(select(m.EndPoint))).scalars().all())
 
 
-def body(participant_id: int, **overrides) -> dict:
+def body(participant_id: int, **overrides: str | int) -> dict[str, str | int]:
     return {
         "endpoint_user_name": NEW_CN,
         "certificate_dn": NEW_CN,
@@ -92,7 +114,7 @@ async def test_no_known_caller_cannot_create_the_first_admin(setup_test_env):
             "/endpoint/", json=payload, headers=identity_headers(name("nobody"))
         )
     assert response.status_code == 401
-    assert await all_endpoints() == []
+    assert [e for e in await all_endpoints() if e.certificate_dn == NEW_CN] == []
 
 
 async def test_a_non_admin_cannot_create_an_admin(setup_test_env):
@@ -103,7 +125,28 @@ async def test_a_non_admin_cannot_create_an_admin(setup_test_env):
     async with trusted_client() as c:
         response = await c.post("/endpoint/", json=payload, headers=identity_headers(user_cn))
     assert response.status_code == 403
-    assert sorted(e.certificate_dn for e in await all_endpoints()) == sorted([admin_cn, user_cn])
+    assert sorted(e.certificate_dn for e in await all_endpoints() if e.participant_id == pid) == (
+        sorted([admin_cn, user_cn])
+    )
+    assert [e for e in await all_endpoints() if e.certificate_dn == NEW_CN] == []
+
+
+async def test_a_participant_admin_who_is_not_a_uudex_admin_cannot_create_an_endpoint(
+    setup_test_env: object,
+) -> None:
+    caller_cn = name("padmin")
+    pid = await seed(name("admin"), admin=True)
+    await seed(caller_cn, admin=False, participant_id=pid)
+    async with get_db_session() as session:
+        await session.execute(
+            update(m.EndPoint)
+            .where(m.EndPoint.certificate_dn == caller_cn)
+            .values(participant_administrator_sw="Y", uudex_administrator_sw="N")
+        )
+    async with trusted_client() as c:
+        response = await c.post("/endpoint/", json=body(pid), headers=identity_headers(caller_cn))
+    assert response.status_code == 403
+    assert [e for e in await all_endpoints() if e.certificate_dn == NEW_CN] == []
 
 
 async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env):
@@ -125,7 +168,14 @@ async def test_an_admin_creates_an_endpoint_when_two_admins_exist(setup_test_env
     assert row.active_sw == "Y"
     assert row.participant_id == pid
     assert uuid.UUID(row.endpoint_uuid).version == 4
-    assert response.json()["endpoint_id"] == row.endpoint_id
+    assert row.create_datetime is not None
+    returned = response.json()
+    assert returned["endpoint_id"] == row.endpoint_id
+    assert returned["endpoint_uuid"] == row.endpoint_uuid
+    assert returned["certificate_dn"] == row.certificate_dn
+    assert returned["participant_id"] == row.participant_id
+    assert returned["uudex_administrator_sw"] == row.uudex_administrator_sw
+    assert returned["participant_administrator_sw"] == row.participant_administrator_sw
 
 
 @pytest.mark.parametrize(
