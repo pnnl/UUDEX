@@ -91,10 +91,12 @@ def _build_cert(
     public_key: ec.EllipticCurvePublicKey,
     signing_key: ec.EllipticCurvePrivateKey,
     *,
-    is_ca: bool,
+    is_ca: bool | None,
+    key_usage: x509.KeyUsage | None = None,
 ) -> x509.Certificate:
+    """`is_ca=None` leaves BasicConstraints out, as `openssl x509 -req` does for a client."""
     now = datetime.datetime.now(datetime.UTC)
-    return (
+    builder = (
         x509.CertificateBuilder()
         .subject_name(subject)
         .issuer_name(issuer)
@@ -102,9 +104,14 @@ def _build_cert(
         .serial_number(x509.random_serial_number())
         .not_valid_before(now - datetime.timedelta(days=1))
         .not_valid_after(now + datetime.timedelta(days=1))
-        .add_extension(x509.BasicConstraints(ca=is_ca, path_length=None), critical=True)
-        .sign(signing_key, hashes.SHA256())
     )
+    if is_ca is not None:
+        builder = builder.add_extension(
+            x509.BasicConstraints(ca=is_ca, path_length=None), critical=True
+        )
+    if key_usage is not None:
+        builder = builder.add_extension(key_usage, critical=True)
+    return builder.sign(signing_key, hashes.SHA256())
 
 
 @functools.cache
@@ -115,11 +122,37 @@ def ca_pair() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
     return key, _build_cert(name, name, key.public_key(), key, is_ca=True)
 
 
-def make_leaf(attrs: list[tuple[str, str]]) -> x509.Certificate:
-    """A leaf signed by the test CA, with exactly the subject attributes given."""
+def key_usage(**flags: bool) -> x509.KeyUsage:
+    """A KeyUsage with only the named flags set, for example `key_usage(key_cert_sign=True)`."""
+    names = (
+        "digital_signature",
+        "content_commitment",
+        "key_encipherment",
+        "data_encipherment",
+        "key_agreement",
+        "key_cert_sign",
+        "crl_sign",
+        "encipher_only",
+        "decipher_only",
+    )
+    return x509.KeyUsage(**{name: flags.get(name, False) for name in names})
+
+
+def make_leaf(
+    attrs: list[tuple[str, str]],
+    *,
+    is_ca: bool | None = False,
+    usage: x509.KeyUsage | None = None,
+) -> x509.Certificate:
+    """A cert signed by the test CA, with exactly the subject attributes given.
+
+    The defaults make a leaf; `is_ca=None` omits BasicConstraints and `usage` adds KeyUsage.
+    """
     ca_key, ca_cert = ca_pair()
     key = ec.generate_private_key(ec.SECP256R1())
-    return _build_cert(_name(attrs), ca_cert.subject, key.public_key(), ca_key, is_ca=False)
+    return _build_cert(
+        _name(attrs), ca_cert.subject, key.public_key(), ca_key, is_ca=is_ca, key_usage=usage
+    )
 
 
 def b64_der(cert: x509.Certificate) -> str:
