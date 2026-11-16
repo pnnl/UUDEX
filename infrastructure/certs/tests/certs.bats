@@ -1091,3 +1091,386 @@ assert_non_ascii_refused() {
     run openssl x509 -in "$TT/o/server.crt" -noout -ext subjectAltName
     [[ "$output" == *"DNS:*.example.com, DNS:my_host-1.example, IP Address:0.0.0.0, IP Address:255.255.255.255, IP Address:FE80:0:0:0:0:0:0:1"* ]]
 }
+
+# Existing files, symlinks, half-made CAs and unsafe parents: refused before
+# any key is made, and a refused run changes nothing.
+
+# One line per entry, dotfiles included: a content hash for a regular file,
+# a marker for anything else, so a rename, a new file or a link shows up.
+snapshot() {
+    local f
+    shopt -s nullglob dotglob
+    for f in "$1"/*; do
+        if [ -f "$f" ] && [ ! -L "$f" ]; then
+            printf '%s %s\n' "$(sha256sum < "$f" | cut -c1-64)" "${f##*/}"
+        else
+            printf 'other %s\n' "${f##*/}"
+        fi
+    done
+    shopt -u nullglob dotglob
+}
+
+# An openssl that records each call and then runs the real one.
+spy_openssl() {
+    local real
+    real=$(command -v openssl)
+    SPYBIN="$TT/spybin"
+    SPYLOG="$TT/openssl.calls"
+    mkdir -p "$SPYBIN"
+    : > "$SPYLOG"
+    printf '#!/bin/sh\necho "$*" >> "%s"\nexec %s "$@"\n' "$SPYLOG" "$real" > "$SPYBIN/openssl"
+    chmod +x "$SPYBIN/openssl"
+}
+
+make_full_set() {
+    run timeout 60 "$GEN_SCRIPT" "${2:-alice}" -k 2048 -o "$1"
+    [ "$status" -eq 0 ]
+}
+
+# Runs the script on an existing folder and checks the refusal: non-zero,
+# the message names the needle, openssl was never called, and the folder is
+# exactly as it was.
+assert_refusal_changes_nothing() {
+    local dir="$1" needle="$2" before
+    shift 2
+    before=$(snapshot "$dir")
+    spy_openssl
+    PATH="$SPYBIN:$PATH" run timeout 60 "$GEN_SCRIPT" "$@" -k 2048 -o "$dir"
+    [ "$status" -ne 0 ] || { echo "accepted: $*"; return 1; }
+    [[ "$output" == *"$needle"* ]] || { echo "message lacks '$needle': $output"; return 1; }
+    [[ "$output" != *"successfully"* ]]
+    [ ! -s "$SPYLOG" ] || { echo "openssl was called: $(cat "$SPYLOG")"; return 1; }
+    [ "$(snapshot "$dir")" = "$before" ]
+}
+
+@test "existing files: a client that already has a key, certificate or bundle is refused, naming the file, and nothing changes" {
+    cd "$WORKDIR"
+    local d="$TT/o" ext other
+    make_full_set "$d"
+    assert_refusal_changes_nothing "$d" "$d/alice.key already exists" alice
+    for ext in key crt p12; do
+        rm -rf -- "${d:?}"
+        make_full_set "$d"
+        for other in key crt p12; do
+            [ "$other" = "$ext" ] || rm -- "${d:?}/alice.${other:?}"
+        done
+        assert_refusal_changes_nothing "$d" "$d/alice.$ext already exists" alice
+    done
+}
+
+@test "existing files: a second client name reuses the CA and the localhost server certificate and leaves the first client alone" {
+    cd "$WORKDIR"
+    local d="$TT/o" before
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Using existing server certificate localhost.crt"* ]]
+    [ -s "$d/bob.key" ] && [ -s "$d/bob.crt" ] && [ -s "$d/bob.p12" ]
+    run openssl verify -CAfile "$d/ca.crt" "$d/bob.crt"
+    [ "$status" -eq 0 ]
+    # Every file that was there is byte-identical, except the serial counter.
+    [ "$(snapshot "$d" | /usr/bin/grep -v -e ' ca.srl$' -e ' bob\.' | sort)" = "$(printf '%s\n' "$before" | /usr/bin/grep -v ' ca.srl$' | sort)" ]
+}
+
+@test "existing files: a second client reuses a server certificate made for other domains, and --force makes a new one" {
+    cd "$WORKDIR"
+    local d="$TT/o" old
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --domain a.example --domain 10.0.0.1
+    [ "$status" -eq 0 ]
+    old=$(sha256sum < "$d/server.key")
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --domain a.example --domain 10.0.0.1
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Using existing server certificate server.crt"* ]]
+    [ "$(sha256sum < "$d/server.key")" = "$old" ]
+    run timeout 60 "$GEN_SCRIPT" carol -k 2048 -o "$d" --domain b.example --force
+    [ "$status" -eq 0 ]
+    [ "$(sha256sum < "$d/server.key")" != "$old" ]
+    run openssl x509 -in "$d/server.crt" -noout -ext subjectAltName
+    [[ "$output" == *"DNS:b.example"* ]]
+}
+
+@test "existing files: a server key without its certificate, or the reverse, is refused" {
+    cd "$WORKDIR"
+    local d="$TT/o" gone
+    for gone in crt key; do
+        rm -rf -- "${d:?}"
+        make_full_set "$d"
+        rm -- "${d:?}/localhost.${gone:?}"
+        assert_refusal_changes_nothing "$d" "only one of localhost.crt and localhost.key" bob
+    done
+}
+
+@test "existing files: a ca-trusted.crt that is not the CA certificate is refused, and --force replaces it" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    printf 'not a certificate\n' > "$d/ca-trusted.crt"
+    assert_refusal_changes_nothing "$d" "$d/ca-trusted.crt already exists" bob
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --force
+    [ "$status" -eq 0 ]
+    cmp "$d/ca.crt" "$d/ca-trusted.crt"
+}
+
+@test "existing files: --force replaces the client files with new ones signed by the same CA, and leaves the CA alone" {
+    cd "$WORKDIR"
+    local d="$TT/o" ca_before key_before
+    make_full_set "$d"
+    ca_before=$(sha256sum < "$d/ca.key")$(sha256sum < "$d/ca.crt")
+    key_before=$(sha256sum < "$d/alice.key")
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -eq 0 ]
+    [ "$(sha256sum < "$d/alice.key")" != "$key_before" ]
+    [ "$(sha256sum < "$d/ca.key")$(sha256sum < "$d/ca.crt")" = "$ca_before" ]
+    run openssl verify -CAfile "$d/ca.crt" "$d/alice.crt"
+    [ "$status" -eq 0 ]
+    [ "$(openssl x509 -in "$d/alice.crt" -noout -pubkey)" = "$(openssl pkey -in "$d/alice.key" -pubout)" ]
+    [ -z "$(ls -A "$d" | /usr/bin/grep staging)" ]
+}
+
+@test "existing files: a forced run that fails at the client certificate keeps the old key, certificate and bundle byte for byte" {
+    cd "$WORKDIR"
+    local d="$TT/o" before real
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    real=$(command -v openssl)
+    mkdir -p "$TT/failleaf"
+    printf '#!/bin/sh\ncase "$*" in *"x509 -req"*alice.crt*) exit 1 ;; esac\nexec %s "$@"\n' "$real" > "$TT/failleaf/openssl"
+    chmod +x "$TT/failleaf/openssl"
+    PATH="$TT/failleaf:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"step failed: sign client certificate"* ]]
+    [ "$(snapshot "$d")" = "$before" ]
+}
+
+@test "existing files: a run that fails at the server key adds nothing and leaves the serial counter alone" {
+    cd "$WORKDIR"
+    local d="$TT/o" before real
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    real=$(command -v openssl)
+    mkdir -p "$TT/failsrv"
+    printf '#!/bin/sh\ncase "$*" in *localhost.key*) exit 1 ;; esac\nexec %s "$@"\n' "$real" > "$TT/failsrv/openssl"
+    chmod +x "$TT/failsrv/openssl"
+    PATH="$TT/failsrv:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    [ "$(snapshot "$d")" = "$before" ]
+}
+
+@test "half-made CA: only ca.key, or only ca.crt, is refused with a message to restore the file or empty the folder, even with --force" {
+    cd "$WORKDIR"
+    local d="$TT/o" gone
+    for gone in key crt; do
+        rm -rf -- "${d:?}"
+        make_full_set "$d"
+        rm -- "${d:?}/ca.${gone:?}"
+        assert_refusal_changes_nothing "$d" "only one of ca.key and ca.crt" bob
+        [[ "$output" == *"restore the missing file or empty the folder"* ]]
+        assert_refusal_changes_nothing "$d" "only one of ca.key and ca.crt" bob --force
+    done
+}
+
+@test "half-made CA: no CA but a leaf certificate is refused, even with --force, and no new CA is made" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    rm -- "${d:?}/ca.key" "${d:?}/ca.crt"
+    assert_refusal_changes_nothing "$d" "but no CA" bob
+    [[ "$output" == *"restore the CA or empty the folder"* ]]
+    assert_refusal_changes_nothing "$d" "but no CA" bob --force
+    [ ! -e "$d/ca.key" ]
+}
+
+@test "symlinks: a link planted at any file in the folder is refused, its target is unchanged, and the run writes nothing" {
+    cd "$WORKDIR"
+    local d="$TT/o" name target_sum
+    make_full_set "$d" bob
+    printf 'precious\n' > "$TT/target"
+    target_sum=$(sha256sum < "$TT/target")
+    for name in alice.key alice.crt alice.p12 ca.srl unrelated; do
+        ln -sf "$TT/target" "$d/$name"
+        assert_refusal_changes_nothing "$d" "$d/$name is a symbolic link" alice
+        assert_refusal_changes_nothing "$d" "$d/$name is a symbolic link" alice --force
+        [ "$(sha256sum < "$TT/target")" = "$target_sum" ]
+        rm -- "${d:?}/${name:?}"
+    done
+    ln -s "$TT/nowhere" "$d/alice.key"
+    assert_refusal_changes_nothing "$d" "$d/alice.key is a symbolic link" alice
+    [ ! -e "$TT/nowhere" ]
+}
+
+@test "symlinks: a link in place of ca.key is refused and is not used to sign" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d" bob
+    mv "$d/ca.key" "$TT/real-ca.key"
+    ln -s "$TT/real-ca.key" "$d/ca.key"
+    assert_refusal_changes_nothing "$d" "$d/ca.key is a symbolic link" alice
+}
+
+@test "folder contents: a directory or a named pipe is refused, naming it" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d" bob
+    mkdir "$d/sub"
+    assert_refusal_changes_nothing "$d" "$d/sub is not a regular file" alice
+    rmdir "$d/sub"
+    mkfifo "$d/pipe"
+    assert_refusal_changes_nothing "$d" "$d/pipe is not a regular file" alice
+    rm -- "${d:?}/pipe"
+}
+
+@test "folder contents: a file owned by another user is refused, naming it" {
+    [ "$(id -u)" -eq 0 ] || skip "needs root to make a file owned by another user"
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d" bob
+    printf 'x\n' > "$d/foreign.txt"
+    chown 1:1 "$d/foreign.txt"
+    assert_refusal_changes_nothing "$d" "$d/foreign.txt is not owned by you" alice
+}
+
+@test "marker: a folder the script made has .uudex-certs and works again for a new client; a failed first run leaves an empty folder that works" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    [ -f "$d/.uudex-certs" ] && [ ! -L "$d/.uudex-certs" ]
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+    fake_openssl_failing
+    PATH="$FAKEBIN:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/first"
+    [ "$status" -ne 0 ]
+    [ -z "$(ls -A "$TT/first")" ]
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/first"
+    [ "$status" -eq 0 ]
+}
+
+@test "marker: a hand-made folder with files is refused and untouched, and an empty hand-made folder is accepted and marked" {
+    cd "$WORKDIR"
+    local d="$TT/hand"
+    mkdir -m 700 "$d"
+    printf 'mine\n' > "$d/notes.txt"
+    assert_refusal_changes_nothing "$d" "has no .uudex-certs marker" alice
+    [ "$(cat "$d/notes.txt")" = "mine" ]
+    rm -- "${d:?}/notes.txt"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+    [ -f "$d/.uudex-certs" ]
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+}
+
+@test "marker: a planted ca.key in a hand-made folder is refused, not used to sign" {
+    cd "$WORKDIR"
+    local d="$TT/hand"
+    mkdir -m 700 "$d"
+    openssl genrsa -out "$d/ca.key" 2048
+    assert_refusal_changes_nothing "$d" "has no .uudex-certs marker" alice
+}
+
+@test "parents: a parent that others or the group can write is refused, naming it, and nothing is made below it" {
+    cd "$WORKDIR"
+    local m
+    for m in 777 775 757 1777; do
+        mkdir -p "$TT/p$m"
+        chmod "$m" "$TT/p$m"
+        run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/p$m/new/out"
+        [ "$status" -ne 0 ] || { echo "accepted parent mode $m"; return 1; }
+        [[ "$output" == *"$TT/p$m, a parent of output folder"*"writable by other users"* ]] || { echo "$m: $output"; return 1; }
+        [ -z "$(ls -A "$TT/p$m")" ]
+        mkdir -m 700 "$TT/p$m/out"
+        run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/p$m/out"
+        [ "$status" -ne 0 ]
+        [ -z "$(ls -A "$TT/p$m/out")" ]
+    done
+}
+
+@test "parents: a writable grandparent is refused, not only the direct parent" {
+    cd "$WORKDIR"
+    mkdir -p "$TT/g/p"
+    chmod 775 "$TT/g"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/g/p/out"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$TT/g, a parent of output folder"* ]]
+    [ ! -e "$TT/g/p/out" ]
+}
+
+@test "parents: a folder under /tmp is refused, naming /tmp, and nothing is made" {
+    local mode d="/tmp/uudex-certs-bats-$$-x"
+    mode=$(ls -ld /tmp)
+    [ "${mode:8:1}" = "w" ] || skip "/tmp is not writable by others here"
+    cd "$WORKDIR"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"/tmp, a parent of output folder"* ]]
+    [ ! -e "$d" ]
+}
+
+@test "parents: a parent owned by neither you nor root is refused; the same run passes when the owner is you" {
+    [ "$(id -u)" -ne 0 ] || skip "root owns every parent it can reach"
+    cd "$WORKDIR"
+    local real_id
+    real_id=$(command -v id)
+    mkdir -p "$TT/fakeid"
+    printf '#!/bin/sh\ncase "$*" in -u) echo 4242 ;; *) exec %s "$@" ;; esac\n' "$real_id" > "$TT/fakeid/id"
+    chmod +x "$TT/fakeid/id"
+    PATH="$TT/fakeid:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/o"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is owned by neither you nor root"* ]]
+    [ ! -e "$TT/o" ]
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/o"
+    [ "$status" -eq 0 ]
+}
+
+@test "parents: a normal layout under the home folder works, and a second client works on the default folder" {
+    cd "$WORKDIR"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048
+    [ "$status" -eq 0 ]
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048
+    [ "$status" -eq 0 ]
+    [ -s "$FAKE_HOME/.config/uudex/tls/bob.key" ]
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$FAKE_HOME/.config/uudex/tls/alice.key already exists"* ]]
+}
+
+@test "output folder links: a symlinked output folder is refused; a link in a parent is followed and the real parents are checked" {
+    cd "$WORKDIR"
+    mkdir -m 700 "$TT/real"
+    ln -s "$TT/real" "$TT/link"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/link"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"is a symbolic link"* ]]
+    [ -z "$(ls -A "$TT/real")" ]
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/link/out"
+    [ "$status" -eq 0 ]
+    [ -s "$TT/real/out/alice.key" ]
+    mkdir -m 777 "$TT/open"
+    chmod 777 "$TT/open"
+    ln -s "$TT/open" "$TT/openlink"
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$TT/openlink/out"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$TT/open, a parent of output folder"* ]]
+    [ -z "$(ls -A "$TT/open")" ]
+}
+
+@test "client names: ca, ca-trusted, server and localhost are refused before the folder is made; a similar name is fine" {
+    cd "$WORKDIR"
+    local n
+    spy_openssl
+    for n in ca ca-trusted server localhost; do
+        PATH="$SPYBIN:$PATH" run timeout 60 "$GEN_SCRIPT" "$n" -k 2048 -o "$TT/n-$n"
+        [ "$status" -ne 0 ] || { echo "accepted $n"; return 1; }
+        [[ "$output" == *"client name '$n' would overwrite the CA or server files"* ]]
+        [ ! -e "$TT/n-$n" ]
+    done
+    [ ! -s "$SPYLOG" ]
+    run timeout 60 "$GEN_SCRIPT" ca2 -k 2048 -o "$TT/n-ca2"
+    [ "$status" -eq 0 ]
+}
+
+@test "help describes --force" {
+    run "$GEN_SCRIPT" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"--force"*"never the CA"* ]]
+}
