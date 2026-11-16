@@ -277,11 +277,18 @@ def test_trusted_hosts_given_as_python_values_are_checked_too(value):
         Settings(**BASE_SETTINGS, trusted_proxy_hosts=value)
 
 
-@pytest.mark.parametrize("value", ["null", "[2886749460]", '["::ffff:10.0.0.1"]'])
+@pytest.mark.parametrize("value", ["[2886749460]", '["::ffff:10.0.0.1"]', '["fe80::1%eth0"]'])
 def test_refused_trusted_hosts_in_the_environment_fail_at_load(monkeypatch, value):
     monkeypatch.setenv("TRUSTED_PROXY_HOSTS", value)
     with pytest.raises((SettingsError, ValidationError)):
         Settings(**BASE_SETTINGS)
+
+
+def test_a_null_in_the_environment_is_read_as_unset_and_so_trusts_no_peer(monkeypatch):
+    # The environment source drops a decoded null before validation, so this is the unset
+    # case, which the startup warning announces.
+    monkeypatch.setenv("TRUSTED_PROXY_HOSTS", "null")
+    assert Settings(**BASE_SETTINGS).trusted_proxy_hosts == []
 
 
 @pytest.mark.parametrize("value", ["[]", '["10.0.0.1", "2001:db8::1"]'])
