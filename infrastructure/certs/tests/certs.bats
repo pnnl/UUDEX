@@ -7,17 +7,22 @@ REPO_GITIGNORE="$BATS_TEST_DIRNAME/../../../.gitignore"
 PG_SCRIPT="$SCRIPTS/generate-certs-from-existing-postgres.sh"
 GEN_SCRIPT="$SCRIPTS/generate-certs.sh"
 ALL_FILES="alice.crt alice.key alice.p12 ca.crt ca.key ca-trusted.crt"
+REAL_HOME="${HOME:-}"
 
+# The script refuses an output folder under a parent that others can write, so
+# the tests cannot live under /tmp: each test gets a folder under the real home.
 setup() {
-    FAKE_HOME="$BATS_TEST_TMPDIR/home"
-    WORKDIR="$BATS_TEST_TMPDIR/work"
+    [ -n "$REAL_HOME" ] || skip "HOME is not set"
+    TT=$(mktemp -d "$REAL_HOME/.uudex-certs-bats.XXXXXX")
+    FAKE_HOME="$TT/home"
+    WORKDIR="$TT/work"
     mkdir -p "$FAKE_HOME" "$WORKDIR"
     export HOME="$FAKE_HOME"
     unset UUDEX_CERTS UUDEX_CERTS_CONF DB_PASSWORD
 
     # psql stub: records each call and answers the three queries the script makes.
-    STUB="$BATS_TEST_TMPDIR/stub"
-    PSQL_LOG="$BATS_TEST_TMPDIR/psql.log"
+    STUB="$TT/stub"
+    PSQL_LOG="$TT/psql.log"
     mkdir -p "$STUB"
     cat > "$STUB/psql" <<STUBEOF
 #!/bin/sh
@@ -31,11 +36,18 @@ STUBEOF
     chmod +x "$STUB/psql"
 }
 
+teardown() {
+    [ -n "${TT:-}" ] || return 0
+    # Tests chmod folders to 000 or 500; restore access so the removal works.
+    chmod -R u+rwx "$TT" 2>/dev/null || true
+    rm -rf "$TT"
+}
+
 # A throwaway repository holding a copy of the real .gitignore, isolated from
 # the developer's global git config, so the checks can fail on untracked paths.
 ignore_repo() {
     [ -f "$REPO_GITIGNORE" ] || skip "no .gitignore next to the source tree"
-    IGN="$BATS_TEST_TMPDIR/ignrepo"
+    IGN="$TT/ignrepo"
     mkdir -p "$IGN"
     cp "$REPO_GITIGNORE" "$IGN/.gitignore"
     unset XDG_CONFIG_HOME GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
@@ -55,17 +67,17 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
 
 @test "generate-certs.sh honours UUDEX_CERTS and leaves the default location empty" {
     cd "$WORKDIR"
-    UUDEX_CERTS="$BATS_TEST_TMPDIR/custom" run "$GEN_SCRIPT" alice -k 2048
+    UUDEX_CERTS="$TT/custom" run "$GEN_SCRIPT" alice -k 2048
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/custom/alice.key" ]
+    [ -s "$TT/custom/alice.key" ]
     [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
 }
 
 @test "generate-certs.sh -o writes to the given folder" {
     cd "$WORKDIR"
-    run "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/dash-o"
+    run "$GEN_SCRIPT" alice -k 2048 -o "$TT/dash-o"
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/dash-o/alice.key" ]
+    [ -s "$TT/dash-o/alice.key" ]
     [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
 }
 
@@ -81,27 +93,27 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
     cd "$WORKDIR"
     run env -u HOME -u UUDEX_CERTS "$GEN_SCRIPT" --help
     [ "$status" -eq 0 ]
-    run env -u HOME -u UUDEX_CERTS "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/nohome"
+    run env -u HOME -u UUDEX_CERTS "$GEN_SCRIPT" alice -k 2048 -o "$TT/nohome"
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/nohome/alice.key" ]
+    [ -s "$TT/nohome/alice.key" ]
 }
 
 @test "generate-certs.sh creates the output folder with mode 700" {
     cd "$WORKDIR"
-    run "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/private"
+    run "$GEN_SCRIPT" alice -k 2048 -o "$TT/private"
     [ "$status" -eq 0 ]
-    [ "$(stat -c %a "$BATS_TEST_TMPDIR/private")" = "700" ]
+    [ "$(stat -c %a "$TT/private")" = "700" ]
 }
 
 @test "generate-certs.sh refuses an output folder that group or others can write" {
     cd "$WORKDIR"
     for m in 775 757 777; do
-        mkdir -p "$BATS_TEST_TMPDIR/shared$m"
-        chmod "$m" "$BATS_TEST_TMPDIR/shared$m"
-        run "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/shared$m"
+        mkdir -p "$TT/shared$m"
+        chmod "$m" "$TT/shared$m"
+        run "$GEN_SCRIPT" alice -k 2048 -o "$TT/shared$m"
         [ "$status" -ne 0 ] || { echo "accepted mode $m"; return 1; }
         [[ "$output" == *"writable"* ]]
-        [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared$m")" ]
+        [ -z "$(ls -A "$TT/shared$m")" ]
     done
 }
 
@@ -160,17 +172,17 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
 
 @test "postgres script honours UUDEX_CERTS" {
     cd "$WORKDIR"
-    UUDEX_CERTS="$BATS_TEST_TMPDIR/custom" DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048
+    UUDEX_CERTS="$TT/custom" DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/custom/alice.key" ]
+    [ -s "$TT/custom/alice.key" ]
     [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
 }
 
 @test "postgres script -o writes to the given folder" {
     cd "$WORKDIR"
-    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/dash-o"
+    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$TT/dash-o"
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/dash-o/alice.key" ]
+    [ -s "$TT/dash-o/alice.key" ]
     [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
 }
 
@@ -182,26 +194,26 @@ is_ignored() { git -C "$IGN" check-ignore -q --no-index "$1"; }
     [ -z "$(ls -A "$WORKDIR")" ]
     run env -u HOME -u UUDEX_CERTS "$PG_SCRIPT" --help
     [ "$status" -eq 0 ]
-    DB_PASSWORD=x PATH="$STUB:$PATH" run env -u HOME -u UUDEX_CERTS "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/nohome"
+    DB_PASSWORD=x PATH="$STUB:$PATH" run env -u HOME -u UUDEX_CERTS "$PG_SCRIPT" --key-size 2048 -o "$TT/nohome"
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/nohome/alice.key" ]
+    [ -s "$TT/nohome/alice.key" ]
 }
 
 @test "postgres script creates the output folder with mode 700" {
     cd "$WORKDIR"
-    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/private"
+    DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$TT/private"
     [ "$status" -eq 0 ]
-    [ "$(stat -c %a "$BATS_TEST_TMPDIR/private")" = "700" ]
+    [ "$(stat -c %a "$TT/private")" = "700" ]
 }
 
 @test "postgres script refuses an output folder that group or others can write" {
     for m in 775 757 777; do
-        mkdir -p "$BATS_TEST_TMPDIR/shared$m"
-        chmod "$m" "$BATS_TEST_TMPDIR/shared$m"
-        DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$BATS_TEST_TMPDIR/shared$m"
+        mkdir -p "$TT/shared$m"
+        chmod "$m" "$TT/shared$m"
+        DB_PASSWORD=x PATH="$STUB:$PATH" run "$PG_SCRIPT" --key-size 2048 -o "$TT/shared$m"
         [ "$status" -ne 0 ] || { echo "accepted mode $m"; return 1; }
         [[ "$output" == *"writable"* ]]
-        [ -z "$(ls -A "$BATS_TEST_TMPDIR/shared$m")" ]
+        [ -z "$(ls -A "$TT/shared$m")" ]
     done
 }
 
@@ -256,7 +268,7 @@ assert_refused_without_files() {
 # Replaces openssl with a stub that always fails. A run that reaches it has
 # passed every argument check, so the check is observable without key generation.
 fake_openssl_failing() {
-    FAKEBIN="$BATS_TEST_TMPDIR/fakebin"
+    FAKEBIN="$TT/fakebin"
     mkdir -p "$FAKEBIN"
     printf '#!/bin/sh\nexit 1\n' > "$FAKEBIN/openssl"
     chmod +x "$FAKEBIN/openssl"
@@ -273,9 +285,9 @@ assert_passed_argument_checks() {
     local i=0 v
     for v in 0 1024 2047 16385 20000 99999 100000 abc 20.48; do
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/kv$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$TT/kv$i"
         echo "key size $v: $output"
-        assert_refused_without_files "$BATS_TEST_TMPDIR/kv$i" "--key-size"
+        assert_refused_without_files "$TT/kv$i" "--key-size"
         [[ "$output" == *"2048 to 16384"* ]]
     done
 }
@@ -285,7 +297,7 @@ assert_passed_argument_checks() {
     fake_openssl_failing
     local v
     for v in 2048 16384; do
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$BATS_TEST_TMPDIR/ok$v"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$v" -o "$TT/ok$v"
         echo "limit $v: $output"
         assert_passed_argument_checks
     done
@@ -297,9 +309,9 @@ assert_passed_argument_checks() {
     local i=0 v
     for v in 0 1000000 9999999 abc 1.5; do
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/d$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$TT/d$i"
         echo "days $v: $output"
-        assert_refused_without_files "$BATS_TEST_TMPDIR/d$i" "--days"
+        assert_refused_without_files "$TT/d$i" "--days"
         [[ "$output" == *"1 to 999999"* ]]
     done
 }
@@ -309,7 +321,7 @@ assert_passed_argument_checks() {
     fake_openssl_failing
     local v
     for v in 1 999999; do
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$BATS_TEST_TMPDIR/ok$v"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$v" -o "$TT/ok$v"
         echo "limit $v: $output"
         assert_passed_argument_checks
     done
@@ -322,30 +334,30 @@ assert_passed_argument_checks() {
     local wide_key wide_days
     wide_key=$(printf '\357\274\222\357\274\220\357\274\224\357\274\230')
     wide_days=$(printf '\357\274\223')
-    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$wide_key" -o "$BATS_TEST_TMPDIR/wk"
-    assert_refused_without_files "$BATS_TEST_TMPDIR/wk" "--key-size"
-    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$wide_days" -o "$BATS_TEST_TMPDIR/wd"
-    assert_refused_without_files "$BATS_TEST_TMPDIR/wd" "--days"
+    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k "$wide_key" -o "$TT/wk"
+    assert_refused_without_files "$TT/wk" "--key-size"
+    LC_ALL=en_US.UTF-8 PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d "$wide_days" -o "$TT/wd"
+    assert_refused_without_files "$TT/wd" "--days"
 }
 
 @test "generate-certs.sh stops with a named step when openssl fails and leaves no files" {
     cd "$WORKDIR"
     fake_openssl_failing
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/failing"
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$TT/failing"
     [ "$status" -ne 0 ]
     [[ "$output" == *"step failed: generate CA key"* ]]
     [[ "$output" != *"successfully"* ]]
-    [ -z "$(ls -A "$BATS_TEST_TMPDIR/failing")" ]
+    [ -z "$(ls -A "$TT/failing")" ]
 }
 
 @test "generate-certs.sh names the server key step, once, when only that openssl call fails" {
     cd "$WORKDIR"
     local real_openssl
     real_openssl=$(command -v openssl)
-    mkdir -p "$BATS_TEST_TMPDIR/selective"
-    printf '#!/bin/sh\ncase "$*" in *localhost.key*) exit 1 ;; esac\nexec %s "$@"\n' "$real_openssl" > "$BATS_TEST_TMPDIR/selective/openssl"
-    chmod +x "$BATS_TEST_TMPDIR/selective/openssl"
-    PATH="$BATS_TEST_TMPDIR/selective:$PATH" run --separate-stderr timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/srv"
+    mkdir -p "$TT/selective"
+    printf '#!/bin/sh\ncase "$*" in *localhost.key*) exit 1 ;; esac\nexec %s "$@"\n' "$real_openssl" > "$TT/selective/openssl"
+    chmod +x "$TT/selective/openssl"
+    PATH="$TT/selective:$PATH" run --separate-stderr timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/srv"
     [ "$status" -ne 0 ]
     [[ "$stderr" == *"step failed: generate server key"* ]]
     [ "$(printf '%s\n' "$stderr" | /usr/bin/grep -c 'step failed')" -eq 1 ]
@@ -355,7 +367,7 @@ assert_passed_argument_checks() {
 @test "generate-certs.sh reports a failed progress message under its own step, not 'starting up'" {
     [ -w /dev/full ] || skip "/dev/full is not available"
     cd "$WORKDIR"
-    run bash -c '"$0" alice -k 2048 -o "$1" 2>&1 >/dev/full' "$GEN_SCRIPT" "$BATS_TEST_TMPDIR/full"
+    run bash -c '"$0" alice -k 2048 -o "$1" 2>&1 >/dev/full' "$GEN_SCRIPT" "$TT/full"
     [ "$status" -ne 0 ]
     [[ "$output" == *"step failed: print progress"* ]]
     [[ "$output" != *"starting up"* ]]
@@ -363,33 +375,33 @@ assert_passed_argument_checks() {
 
 @test "generate-certs.sh reports one error when the folder permissions cannot be read" {
     cd "$WORKDIR"
-    mkdir -p "$BATS_TEST_TMPDIR/faills"
-    printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/faills/ls"
-    chmod +x "$BATS_TEST_TMPDIR/faills/ls"
-    PATH="$BATS_TEST_TMPDIR/faills:$PATH" run --separate-stderr timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/lsdir"
+    mkdir -p "$TT/faills"
+    printf '#!/bin/sh\nexit 1\n' > "$TT/faills/ls"
+    chmod +x "$TT/faills/ls"
+    PATH="$TT/faills:$PATH" run --separate-stderr timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$TT/lsdir"
     [ "$status" -ne 0 ]
-    [[ "$stderr" == *"$BATS_TEST_TMPDIR/lsdir"* ]]
+    [[ "$stderr" == *"$TT/lsdir"* ]]
     [ "$(printf '%s\n' "$stderr" | /usr/bin/grep -c .)" -eq 1 ]
 }
 
 @test "generate-certs.sh --list on a missing folder exits 1 with the reason on stderr and no step failure" {
     cd "$WORKDIR"
-    run --separate-stderr timeout 5 "$GEN_SCRIPT" --list -o "$BATS_TEST_TMPDIR/nothere"
+    run --separate-stderr timeout 5 "$GEN_SCRIPT" --list -o "$TT/nothere"
     [ "$status" -eq 1 ]
     [[ "$stderr" == *"does not exist"* ]]
     [[ "$stderr" != *"step failed"* ]]
     [[ "$output" != *"step failed"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/nothere" ]
+    [ ! -e "$TT/nothere" ]
 }
 
 @test "generate-certs.sh refuses an existing owned folder it cannot write, naming it" {
     [ "$(id -u)" -ne 0 ] || skip "root can write to a mode 0500 folder"
     cd "$WORKDIR"
-    mkdir -p "$BATS_TEST_TMPDIR/readonly"
-    chmod 500 "$BATS_TEST_TMPDIR/readonly"
-    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/readonly"
-    chmod 700 "$BATS_TEST_TMPDIR/readonly"
-    assert_refused_without_files "$BATS_TEST_TMPDIR/readonly" "$BATS_TEST_TMPDIR/readonly"
+    mkdir -p "$TT/readonly"
+    chmod 500 "$TT/readonly"
+    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -o "$TT/readonly"
+    chmod 700 "$TT/readonly"
+    assert_refused_without_files "$TT/readonly" "$TT/readonly"
     [[ "$output" == *"not writable"* ]]
 }
 
@@ -405,7 +417,7 @@ assert_passed_argument_checks() {
 
 @test "generate-certs.sh refuses a value option followed by another option or an empty value" {
     cd "$WORKDIR"
-    run timeout 5 "$GEN_SCRIPT" alice --domain --server-only -o "$BATS_TEST_TMPDIR/dd"
+    run timeout 5 "$GEN_SCRIPT" alice --domain --server-only -o "$TT/dd"
     [ "$status" -ne 0 ]
     [ "$status" -ne 124 ]
     [[ "$output" == *"--domain requires a value"* ]]
@@ -413,14 +425,14 @@ assert_passed_argument_checks() {
     [ "$status" -ne 0 ]
     [ "$status" -ne 124 ]
     [[ "$output" == *"-o requires a value"* ]]
-    run timeout 5 "$GEN_SCRIPT" alice -s "" -o "$BATS_TEST_TMPDIR/empty"
+    run timeout 5 "$GEN_SCRIPT" alice -s "" -o "$TT/empty"
     [ "$status" -ne 0 ]
     [[ "$output" == *"-s requires a value"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/empty" ]
-    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d -5 -o "$BATS_TEST_TMPDIR/negdays"
+    [ ! -e "$TT/empty" ]
+    run timeout 5 "$GEN_SCRIPT" alice -k 2048 -d -5 -o "$TT/negdays"
     [ "$status" -ne 0 ]
     [[ "$output" == *"-d requires a value, got the option-like '-5'"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/negdays" ]
+    [ ! -e "$TT/negdays" ]
 }
 
 @test "generate-certs.sh refuses a blank value for each value option and writes nothing" {
@@ -446,7 +458,7 @@ EXAMPLE_CONF="$SCRIPTS/uudex-certs.conf.example"
 subject_of() { openssl x509 -in "$1" -noout -subject -nameopt RFC2253; }
 
 write_conf() {
-    CONF="$BATS_TEST_TMPDIR/test.conf"
+    CONF="$TT/test.conf"
     printf '%s\n' "$@" > "$CONF"
     chmod 600 "$CONF"
 }
@@ -458,25 +470,25 @@ FULL_CONF=(
 
 @test "config: built-in defaults apply with no config file" {
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/o"
     [ "$status" -eq 0 ]
-    [ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" = "subject=CN=LocalCA,O=Organization,L=City,ST=State,C=US" ]
+    [ "$(subject_of "$TT/o/ca.crt")" = "subject=CN=LocalCA,O=Organization,L=City,ST=State,C=US" ]
 }
 
 @test "config: a partial config sets its own keys and the rest stay built-in" {
     cd "$WORKDIR"
     write_conf "O = Partial Org"
-    run timeout 60 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$TT/o"
     [ "$status" -eq 0 ]
-    [ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" = "subject=CN=LocalCA,O=Partial Org,L=City,ST=State,C=US" ]
+    [ "$(subject_of "$TT/o/ca.crt")" = "subject=CN=LocalCA,O=Partial Org,L=City,ST=State,C=US" ]
 }
 
 @test "config: values from the config are used when no option is given" {
     cd "$WORKDIR"
-    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout"
+    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $TT/cfgout"
     run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
     [ "$status" -eq 0 ]
-    local d="$BATS_TEST_TMPDIR/cfgout"
+    local d="$TT/cfgout"
     [ ! -e "$FAKE_HOME/.config/uudex/tls" ]
     [ "$(subject_of "$d/ca.crt")" = "subject=CN=Conf CA,O=Conf Org,L=Toronto,ST=Ontario,C=CA" ]
     [ "$(subject_of "$d/alice.crt")" = "subject=CN=alice,O=Conf Org,L=Toronto,ST=Ontario,C=CA" ]
@@ -502,20 +514,20 @@ FULL_CONF=(
 @test "config: UUDEX_CERTS_CONF points at another file" {
     cd "$WORKDIR"
     write_conf "O = Env Conf Org"
-    UUDEX_CERTS_CONF="$CONF" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    UUDEX_CERTS_CONF="$CONF" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/o"
     [ "$status" -eq 0 ]
-    [[ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" == *"O=Env Conf Org"* ]]
+    [[ "$(subject_of "$TT/o/ca.crt")" == *"O=Env Conf Org"* ]]
 }
 
 @test "config: every option overrides the config value" {
     cd "$WORKDIR"
-    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout"
+    write_conf "${FULL_CONF[@]}" "OUTPUT_DIR = $TT/cfgout"
     sed -i 's/^KEY_SIZE = 2048/KEY_SIZE = 2560/' "$CONF"
     run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -c US -s Washington -l Richland \
-        --org "Opt Org" --ca-name "Opt CA" -k 2048 -d 400 --domain opt.example -o "$BATS_TEST_TMPDIR/optout"
+        --org "Opt Org" --ca-name "Opt CA" -k 2048 -d 400 --domain opt.example -o "$TT/optout"
     [ "$status" -eq 0 ]
-    local d="$BATS_TEST_TMPDIR/optout"
-    [ ! -e "$BATS_TEST_TMPDIR/cfgout" ]
+    local d="$TT/optout"
+    [ ! -e "$TT/cfgout" ]
     [ "$(subject_of "$d/ca.crt")" = "subject=CN=Opt CA,O=Opt Org,L=Richland,ST=Washington,C=US" ]
     [ "$(subject_of "$d/alice.crt")" = "subject=CN=alice,O=Opt Org,L=Richland,ST=Washington,C=US" ]
     [ "$(subject_of "$d/server.crt")" = "subject=CN=opt.example,O=Opt Org,L=Richland,ST=Washington,C=US" ]
@@ -530,11 +542,11 @@ FULL_CONF=(
 
 @test "config: UUDEX_CERTS beats OUTPUT_DIR in the config" {
     cd "$WORKDIR"
-    write_conf "OUTPUT_DIR = $BATS_TEST_TMPDIR/cfgout" "KEY_SIZE = 2048"
-    UUDEX_CERTS="$BATS_TEST_TMPDIR/envout" run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
+    write_conf "OUTPUT_DIR = $TT/cfgout" "KEY_SIZE = 2048"
+    UUDEX_CERTS="$TT/envout" run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
     [ "$status" -eq 0 ]
-    [ -s "$BATS_TEST_TMPDIR/envout/alice.key" ]
-    [ ! -e "$BATS_TEST_TMPDIR/cfgout" ]
+    [ -s "$TT/envout/alice.key" ]
+    [ ! -e "$TT/cfgout" ]
 }
 
 @test "config: OUTPUT_DIR may start with ~/ and must otherwise be absolute" {
@@ -553,44 +565,44 @@ FULL_CONF=(
 @test "config: an unknown key is refused naming the line and the key" {
     cd "$WORKDIR"
     write_conf "# comment" "" "C = US" "COUNTY = Benton"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"$CONF line 4: unknown key 'COUNTY'"* ]]
     [[ "$output" != *"successfully"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: a malformed line, a duplicate key and CRLF endings are refused naming the line" {
     cd "$WORKDIR"
     write_conf "C = US" "this is not a setting"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 2: expected KEY = VALUE"* ]]
     write_conf "C = US" "C = CA"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 2: key 'C' is set twice"* ]]
     printf 'C = US\r\n' > "$CONF"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 1: carriage return"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: bad KEY_SIZE and DAYS fail with the same range message and the line, even when overridden" {
     cd "$WORKDIR"
     write_conf "C = US" "KEY_SIZE = 1024"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 2: KEY_SIZE must be a whole number from 2048 to 16384, got '1024'"* ]]
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 2: KEY_SIZE"* ]]
     write_conf "DAYS = 1.5"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 1: DAYS must be a whole number from 1 to 999999, got '1.5'"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: a blank, option-like or empty-item value is refused like the option form" {
@@ -598,39 +610,39 @@ FULL_CONF=(
     local bad
     for bad in "ST =" "ST = -x" "DOMAINS = a.example,,b.example" "DOMAINS = a.example," "O = -"; do
         write_conf "$bad"
-        run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+        run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
         [ "$status" -ne 0 ] || { echo "accepted: $bad"; return 1; }
         [[ "$output" == *"line 1"* && "$output" == *"requires a value"* ]] || { echo "$bad: $output"; return 1; }
     done
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: an explicit config that does not exist is refused, a missing default is fine" {
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$BATS_TEST_TMPDIR/nothere.conf" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$TT/nothere.conf" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"nothere.conf does not exist"* ]]
-    UUDEX_CERTS_CONF="$BATS_TEST_TMPDIR/nothere.conf" run timeout 60 "$GEN_SCRIPT" alice -o "$BATS_TEST_TMPDIR/o"
+    UUDEX_CERTS_CONF="$TT/nothere.conf" run timeout 60 "$GEN_SCRIPT" alice -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"does not exist"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
     [ ! -e "$FAKE_HOME/.config/uudex/certs.conf" ]
-    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/o"
     [ "$status" -eq 0 ]
 }
 
 @test "config: a directory, or a file others can write, is refused and nothing is written" {
     cd "$WORKDIR"
-    mkdir "$BATS_TEST_TMPDIR/dir.conf"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$BATS_TEST_TMPDIR/dir.conf" -o "$BATS_TEST_TMPDIR/o"
+    mkdir "$TT/dir.conf"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$TT/dir.conf" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"is not a regular file"* ]]
     write_conf "C = US"
     chmod 666 "$CONF"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"writable by other users"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: a file that only the group, or only others, can write is refused and nothing is written" {
@@ -639,10 +651,10 @@ FULL_CONF=(
     for m in 620 602; do
         write_conf "C = US"
         chmod "$m" "$CONF"
-        run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$BATS_TEST_TMPDIR/o$m"
+        run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -o "$TT/o$m"
         [ "$status" -ne 0 ] || { echo "accepted mode $m"; return 1; }
         [[ "$output" == *"writable by other users"* ]] || { echo "mode $m: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/o$m" ]
+        [ ! -e "$TT/o$m" ]
     done
 }
 
@@ -651,27 +663,27 @@ FULL_CONF=(
     [ -f "$other" ] && [ -r "$other" ] && [ ! -O "$other" ] || skip "$other is not a readable file owned by another user"
     [ ! -w "$other" ] || skip "$other is writable by this user"
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$other" -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$other" -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"must be readable and owned by you"* ]]
     [[ "$output" != *"expected KEY = VALUE"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: shell syntax in a value is refused, never run, and nothing is written" {
     cd "$WORKDIR"
-    write_conf 'C=$(touch '"$BATS_TEST_TMPDIR"'/pwned)'
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$BATS_TEST_TMPDIR/o"
+    write_conf 'C=$(touch '"$TT"'/pwned)'
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" -k 2048 -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"line 1: C contains the character"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/pwned" ]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/pwned" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: with every value in the config, a client name alone makes the CA, server and client certificates" {
     cd "$WORKDIR"
     write_conf "${FULL_CONF[@]}"
-    cp "$CONF" "$BATS_TEST_TMPDIR/keep.conf"
+    cp "$CONF" "$TT/keep.conf"
     mkdir -p "$FAKE_HOME/.config/uudex"
     cp "$CONF" "$FAKE_HOME/.config/uudex/certs.conf"
     run timeout 60 "$GEN_SCRIPT" alice
@@ -700,34 +712,34 @@ FULL_CONF=(
 
 @test "config: --list uses OUTPUT_DIR from the config" {
     cd "$WORKDIR"
-    write_conf "OUTPUT_DIR = $BATS_TEST_TMPDIR/listdir" "KEY_SIZE = 2048"
+    write_conf "OUTPUT_DIR = $TT/listdir" "KEY_SIZE = 2048"
     run timeout 60 "$GEN_SCRIPT" alice --config "$CONF"
     [ "$status" -eq 0 ]
     run timeout 60 "$GEN_SCRIPT" --list --config "$CONF"
     [ "$status" -eq 0 ]
-    [[ "$output" == *"$BATS_TEST_TMPDIR/listdir"* && "$output" == *"Name: alice"* ]]
+    [[ "$output" == *"$TT/listdir"* && "$output" == *"Name: alice"* ]]
 }
 
 @test "config: --config beats UUDEX_CERTS_CONF, even when that variable is empty" {
     cd "$WORKDIR"
     write_conf "O = Flag Org" "KEY_SIZE = 2048"
     local flag_conf="$CONF"
-    printf 'O = Env Org\nKEY_SIZE = 2048\n' > "$BATS_TEST_TMPDIR/env.conf"
-    chmod 600 "$BATS_TEST_TMPDIR/env.conf"
-    UUDEX_CERTS_CONF="$BATS_TEST_TMPDIR/env.conf" run timeout 60 "$GEN_SCRIPT" alice --config "$flag_conf" -o "$BATS_TEST_TMPDIR/o"
+    printf 'O = Env Org\nKEY_SIZE = 2048\n' > "$TT/env.conf"
+    chmod 600 "$TT/env.conf"
+    UUDEX_CERTS_CONF="$TT/env.conf" run timeout 60 "$GEN_SCRIPT" alice --config "$flag_conf" -o "$TT/o"
     [ "$status" -eq 0 ]
-    [[ "$(subject_of "$BATS_TEST_TMPDIR/o/ca.crt")" == *"O=Flag Org"* ]]
-    UUDEX_CERTS_CONF="" run timeout 60 "$GEN_SCRIPT" alice --config "$flag_conf" -o "$BATS_TEST_TMPDIR/o2"
+    [[ "$(subject_of "$TT/o/ca.crt")" == *"O=Flag Org"* ]]
+    UUDEX_CERTS_CONF="" run timeout 60 "$GEN_SCRIPT" alice --config "$flag_conf" -o "$TT/o2"
     [ "$status" -eq 0 ]
-    [[ "$(subject_of "$BATS_TEST_TMPDIR/o2/ca.crt")" == *"O=Flag Org"* ]]
+    [[ "$(subject_of "$TT/o2/ca.crt")" == *"O=Flag Org"* ]]
 }
 
 @test "config: an empty UUDEX_CERTS_CONF is refused with a message and nothing is written" {
     cd "$WORKDIR"
-    UUDEX_CERTS_CONF="" run timeout 60 "$GEN_SCRIPT" alice -o "$BATS_TEST_TMPDIR/o"
+    UUDEX_CERTS_CONF="" run timeout 60 "$GEN_SCRIPT" alice -o "$TT/o"
     [ "$status" -ne 0 ]
     [[ "$output" == *"UUDEX_CERTS_CONF requires a value"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/o" ]
+    [ ! -e "$TT/o" ]
 }
 
 @test "config: OUTPUT_DIR with ~/ is refused naming the line when HOME is not set" {
@@ -771,15 +783,15 @@ assert_subject_refused() {
     for ch in "${SUBJECT_BAD_CHARS[@]}"; do
         for opt in --country --state --city --org --ca-name; do
             i=$((i + 1))
-            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "a${ch}b" -o "$BATS_TEST_TMPDIR/s$i"
-            assert_subject_refused "$(cli_label "$opt")" "$ch" "$BATS_TEST_TMPDIR/s$i"
+            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "a${ch}b" -o "$TT/s$i"
+            assert_subject_refused "$(cli_label "$opt")" "$ch" "$TT/s$i"
         done
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "a${ch}b" -k 2048 -o "$BATS_TEST_TMPDIR/s$i"
-        assert_subject_refused "$ORG_LABEL" "$ch" "$BATS_TEST_TMPDIR/s$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "a${ch}b" -k 2048 -o "$TT/s$i"
+        assert_subject_refused "$ORG_LABEL" "$ch" "$TT/s$i"
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "a${ch}b" -k 2048 -o "$BATS_TEST_TMPDIR/s$i"
-        assert_subject_refused "CLIENT_NAME" "$ch" "$BATS_TEST_TMPDIR/s$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "a${ch}b" -k 2048 -o "$TT/s$i"
+        assert_subject_refused "CLIENT_NAME" "$ch" "$TT/s$i"
     done
     [ -z "$(ls -A "$WORKDIR")" ]
     [ ! -e "$FAKE_HOME/.config" ]
@@ -791,18 +803,18 @@ assert_subject_refused() {
     local i=0 opt key
     for opt in --country --state --city --org --ca-name; do
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" $'a\nb' -o "$BATS_TEST_TMPDIR/n$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" $'a\nb' -o "$TT/n$i"
         [ "$status" -ne 0 ] || { echo "accepted a newline in $opt"; return 1; }
         [[ "$output" == *"$(cli_label "$opt") contains a control character"* ]] || { echo "$opt: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/n$i" ]
+        [ ! -e "$TT/n$i" ]
     done
     for key in C ST L O CA_CN; do
         i=$((i + 1))
         write_conf "$key = a"$'\t'"b"
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/n$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$TT/n$i"
         [ "$status" -ne 0 ] || { echo "accepted a tab in $key"; return 1; }
         [[ "$output" == *"$CONF line 1: $key contains a control character"* ]] || { echo "$key: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/n$i" ]
+        [ ! -e "$TT/n$i" ]
     done
 }
 
@@ -814,8 +826,8 @@ assert_subject_refused() {
         for key in C ST L O CA_CN; do
             i=$((i + 1))
             write_conf "# header" "$key = a${ch}b"
-            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/c$i"
-            assert_subject_refused "$CONF line 2: $key" "$ch" "$BATS_TEST_TMPDIR/c$i"
+            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$TT/c$i"
+            assert_subject_refused "$CONF line 2: $key" "$ch" "$TT/c$i"
         done
     done
     [ -z "$(ls -A "$WORKDIR")" ]
@@ -829,10 +841,10 @@ assert_subject_refused() {
     for line in "L = Richland # city" "O = Acme/CN=evil.example/O=Injected" "O = \${ENV::HOME}"; do
         i=$((i + 1))
         write_conf "$line"
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/i$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$TT/i$i"
         [ "$status" -ne 0 ] || { echo "accepted: $line"; return 1; }
         [[ "$output" == *"$CONF line 1:"* && "$output" == *"contains the character"* ]] || { echo "$line: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/i$i" ]
+        [ ! -e "$TT/i$i" ]
     done
 }
 
@@ -844,32 +856,32 @@ assert_non_ascii_refused() {
     for v in "$(printf 'Caf\303\251')" "$(printf 'a\377b')"; do
         for opt in --country --state --city --org --ca-name; do
             i=$((i + 1))
-            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$BATS_TEST_TMPDIR/a$i"
+            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$TT/a$i"
             [ "$status" -ne 0 ] || { echo "accepted a non-ASCII value in $opt"; return 1; }
             [[ "$output" == *"$(cli_label "$opt") contains a non-ASCII character"* ]] || { echo "$opt: $output"; return 1; }
             [[ "$output" != *"step failed"* ]] || { echo "$opt got past the checks: $output"; return 1; }
-            [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+            [ ! -e "$TT/a$i" ]
         done
         i=$((i + 1))
-        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$BATS_TEST_TMPDIR/a$i"
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$TT/a$i"
         [[ "$status" -ne 0 && "$output" == *"$ORG_LABEL contains a non-ASCII character"* ]] || { echo "ORG: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        [ ! -e "$TT/a$i" ]
         i=$((i + 1))
-        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$BATS_TEST_TMPDIR/a$i"
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$TT/a$i"
         [[ "$status" -ne 0 && "$output" == *"CLIENT_NAME contains a non-ASCII character"* ]] || { echo "CLIENT_NAME: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        [ ! -e "$TT/a$i" ]
         for key in C ST L O CA_CN; do
             i=$((i + 1))
             write_conf "$key = $v"
-            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/a$i"
+            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$TT/a$i"
             [ "$status" -ne 0 ] || { echo "accepted a non-ASCII value in $key"; return 1; }
             [[ "$output" == *"$CONF line 1: $key contains a non-ASCII character"* ]] || { echo "$key: $output"; return 1; }
-            [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+            [ ! -e "$TT/a$i" ]
         done
         i=$((i + 1))
-        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 --domain "$v" -o "$BATS_TEST_TMPDIR/a$i"
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 --domain "$v" -o "$TT/a$i"
         [ "$status" -ne 0 ] || { echo "accepted a non-ASCII server name"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        [ ! -e "$TT/a$i" ]
     done
 }
 
@@ -891,22 +903,22 @@ assert_non_ascii_refused() {
     for v in " Acme" "Acme " " Acme "; do
         for opt in --country --state --city --org --ca-name; do
             i=$((i + 1))
-            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$BATS_TEST_TMPDIR/w$i"
+            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$TT/w$i"
             [ "$status" -ne 0 ] || { echo "accepted '$v' in $opt"; return 1; }
             [[ "$output" == *"$(cli_label "$opt") has leading or trailing whitespace"* ]] || { echo "$opt '$v': $output"; return 1; }
             [[ "$output" != *"step failed"* ]] || { echo "$opt '$v' got past the checks: $output"; return 1; }
-            [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+            [ ! -e "$TT/w$i" ]
         done
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$BATS_TEST_TMPDIR/w$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$TT/w$i"
         [ "$status" -ne 0 ] || { echo "accepted '$v' as ORG"; return 1; }
         [[ "$output" == *"$ORG_LABEL has leading or trailing whitespace"* ]] || { echo "ORG '$v': $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+        [ ! -e "$TT/w$i" ]
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$BATS_TEST_TMPDIR/w$i"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$TT/w$i"
         [ "$status" -ne 0 ] || { echo "accepted '$v' as CLIENT_NAME"; return 1; }
         [[ "$output" == *"CLIENT_NAME has leading or trailing whitespace"* ]] || { echo "CLIENT_NAME '$v': $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+        [ ! -e "$TT/w$i" ]
     done
     [ -z "$(ls -A "$WORKDIR")" ]
 }
@@ -914,29 +926,29 @@ assert_non_ascii_refused() {
 @test "subject values: the config trims edge whitespace, so all three certificates carry the same value" {
     cd "$WORKDIR"
     write_conf "O =    Acme   " "KEY_SIZE = 2048"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" --domain host.example -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" --domain host.example -o "$TT/o"
     [ "$status" -eq 0 ]
     local f
     for f in ca alice server; do
-        [[ "$(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")" == *",O=Acme,"* ]] || { echo "$f: $(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")"; return 1; }
+        [[ "$(subject_of "$TT/o/$f.crt")" == *",O=Acme,"* ]] || { echo "$f: $(subject_of "$TT/o/$f.crt")"; return 1; }
     done
 }
 
 @test "subject values: = , ; & % : @ ( ) [ ] and spaces are allowed and read back the same from every certificate" {
     cd "$WORKDIR"
     write_conf "O = R&D, Inc. (West) = 100% ok; a:b @c [d]" "KEY_SIZE = 2048"
-    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" --domain host.example -o "$BATS_TEST_TMPDIR/o"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" --domain host.example -o "$TT/o"
     [ "$status" -eq 0 ]
     local want='O=R&D\, Inc. (West) = 100% ok\; a:b @c [d],'
     local f
     for f in ca alice server; do
-        [[ "$(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")" == *"$want"* ]] || { echo "$f: $(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")"; return 1; }
+        [[ "$(subject_of "$TT/o/$f.crt")" == *"$want"* ]] || { echo "$f: $(subject_of "$TT/o/$f.crt")"; return 1; }
     done
 }
 
 @test "existing CA: a different requested CA subject warns on stderr, the summary shows the CA in use, and the CA is not changed" {
     cd "$WORKDIR"
-    local d="$BATS_TEST_TMPDIR/o" before
+    local d="$TT/o" before
     run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --ca-name FirstCA --org FirstOrg
     [ "$status" -eq 0 ]
     [[ "$output" == *"CA subject: CN=FirstCA, O=FirstOrg, L=City, ST=State, C=US"* ]]
@@ -954,7 +966,7 @@ assert_non_ascii_refused() {
 
 @test "existing CA: the same requested subject, or a new CA, prints no warning" {
     cd "$WORKDIR"
-    local d="$BATS_TEST_TMPDIR/o"
+    local d="$TT/o"
     run --separate-stderr timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --ca-name FirstCA --org FirstOrg
     [ "$status" -eq 0 ]
     [[ "$stderr" != *"Warning"* ]]
@@ -968,19 +980,19 @@ assert_non_ascii_refused() {
 
 @test "domains: two DNS names and two IPv4 addresses in one run all land, numbered without gaps" {
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/o" \
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/o" \
         --domain a.example --domain b.example --domain 10.0.0.1 --domain 10.0.0.2
     [ "$status" -eq 0 ]
-    run openssl x509 -in "$BATS_TEST_TMPDIR/o/server.crt" -noout -ext subjectAltName
+    run openssl x509 -in "$TT/o/server.crt" -noout -ext subjectAltName
     [ "$status" -eq 0 ]
     [[ "$output" == *"DNS:a.example, DNS:b.example, IP Address:10.0.0.1, IP Address:10.0.0.2"* ]]
 }
 
 @test "domains: an IPv6 address becomes an IP entry, not a DNS name" {
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/o" --domain host.example --domain ::1
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/o" --domain host.example --domain ::1
     [ "$status" -eq 0 ]
-    run openssl x509 -in "$BATS_TEST_TMPDIR/o/server.crt" -noout -ext subjectAltName
+    run openssl x509 -in "$TT/o/server.crt" -noout -ext subjectAltName
     [[ "$output" == *"DNS:host.example, IP Address:0:0:0:0:0:0:0:1"* ]]
     [[ "$output" != *"DNS:::1"* ]]
 }
@@ -991,29 +1003,29 @@ assert_non_ascii_refused() {
     local i=0 bad
     for bad in 999.1.1.1 010.0.0.1 1.2.3.4/24 "foo bar" ::: 1:2:3:4:5:6:7:8: g::1 1:2:3:4:5:6:7::8 1:2:3 12345::1 "a\$b" "a\"b"; do
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/d$i" --domain "$bad"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/d$i" --domain "$bad"
         [ "$status" -ne 0 ] || { echo "accepted --domain $bad"; return 1; }
         [[ "$output" == *"--domain '$bad' is not a"* ]] || { echo "--domain $bad: $output"; return 1; }
         [[ "$output" != *"step failed"* ]] || { echo "--domain $bad got past the checks: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/d$i/ca.key" ]
-        [ ! -e "$BATS_TEST_TMPDIR/d$i" ]
+        [ ! -e "$TT/d$i/ca.key" ]
+        [ ! -e "$TT/d$i" ]
         write_conf "DOMAINS = ok.example, $bad"
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/e$i" --config "$CONF"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/e$i" --config "$CONF"
         [ "$status" -ne 0 ] || { echo "accepted DOMAINS $bad"; return 1; }
         [[ "$output" == *"$CONF line 1: DOMAINS '$bad' is not a"* ]] || { echo "DOMAINS $bad: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/e$i" ]
+        [ ! -e "$TT/e$i" ]
     done
 }
 
 @test "domains: a newline inside an IPv6-looking name is refused and no extra SAN entry is made" {
     cd "$WORKDIR"
     fake_openssl_failing
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/nl" \
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/nl" \
         --domain host.example --domain $'::1\nDNS.9 = evil.example'
     [ "$status" -ne 0 ]
     [[ "$output" == *"is not a valid IPv6 address"* ]]
     [[ "$output" != *"step failed"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/nl" ]
+    [ ! -e "$TT/nl" ]
 }
 
 @test "domains: malformed DNS names and digit-and-dot names are refused before ca.key exists, from the option and from the config" {
@@ -1032,17 +1044,17 @@ assert_non_ascii_refused() {
              "$label64.example|longer than 63 characters"; do
         bad="${c%%|*}" want="${c#*|}"
         i=$((i + 1))
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/n$i" --domain "$bad"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/n$i" --domain "$bad"
         [ "$status" -ne 0 ] || { echo "accepted --domain $bad"; return 1; }
         [[ "$output" == *"--domain '$bad' "*"$want"* ]] || { echo "--domain $bad: $output"; return 1; }
         [[ "$output" != *"step failed"* ]] || { echo "--domain $bad got past the checks: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/n$i/ca.key" ]
-        [ ! -e "$BATS_TEST_TMPDIR/n$i" ]
+        [ ! -e "$TT/n$i/ca.key" ]
+        [ ! -e "$TT/n$i" ]
         write_conf "DOMAINS = ok.example, $bad"
-        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/m$i" --config "$CONF"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/m$i" --config "$CONF"
         [ "$status" -ne 0 ] || { echo "accepted DOMAINS $bad"; return 1; }
         [[ "$output" == *"$CONF line 1: DOMAINS '$bad' "*"$want"* ]] || { echo "DOMAINS $bad: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/m$i" ]
+        [ ! -e "$TT/m$i" ]
     done
 }
 
@@ -1055,27 +1067,27 @@ assert_non_ascii_refused() {
     label63=$(printf '%063d' 0 | tr 0 a)
     [ "${#long64}" -eq 64 ]
     [ "${#long65}" -eq 65 ]
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l1" --domain "$long65" --domain ok.example
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/l1" --domain "$long65" --domain ok.example
     [ "$status" -ne 0 ]
     [[ "$output" == *"the first server name '$long65' is 65 characters"* ]]
     [[ "$output" != *"step failed"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/l1" ]
+    [ ! -e "$TT/l1" ]
     write_conf "DOMAINS = $long65, ok.example"
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l2" --config "$CONF"
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/l2" --config "$CONF"
     [ "$status" -ne 0 ]
     [[ "$output" == *"the first server name '$long65' is 65 characters"* ]]
-    [ ! -e "$BATS_TEST_TMPDIR/l2" ]
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l3" --domain "$long64"
+    [ ! -e "$TT/l2" ]
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/l3" --domain "$long64"
     assert_passed_argument_checks
-    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l4" --domain ok.example --domain "$long65.$label63"
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/l4" --domain ok.example --domain "$long65.$label63"
     assert_passed_argument_checks
 }
 
 @test "domains: valid names and addresses are accepted, including a wildcard, 0.0.0.0 and 255.255.255.255" {
     cd "$WORKDIR"
-    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/o" \
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$TT/o" \
         --domain '*.example.com' --domain my_host-1.example --domain 0.0.0.0 --domain 255.255.255.255 --domain fe80::1
     [ "$status" -eq 0 ]
-    run openssl x509 -in "$BATS_TEST_TMPDIR/o/server.crt" -noout -ext subjectAltName
+    run openssl x509 -in "$TT/o/server.crt" -noout -ext subjectAltName
     [[ "$output" == *"DNS:*.example.com, DNS:my_host-1.example, IP Address:0.0.0.0, IP Address:255.255.255.255, IP Address:FE80:0:0:0:0:0:0:1"* ]]
 }
