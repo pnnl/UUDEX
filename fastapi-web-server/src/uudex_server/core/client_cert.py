@@ -23,6 +23,11 @@ FORWARDED_CERT_HEADER = "X-Forwarded-Tls-Client-Cert"
 MAX_HEADER_CHARS = 16384
 
 
+# The CN reaches the debug log and the endpoint lookup: refuse control, format, line and
+# paragraph separator, private-use, surrogate and unassigned characters.
+_BAD_CN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"})
+
+
 class ClientCertError(Exception):
     """The forwarded certificate cannot name a caller; `reason` is safe to log."""
 
@@ -88,6 +93,6 @@ def parse_forwarded_cert(value: str | None) -> ClientCert:
     cn = names[0].value
     if not isinstance(cn, str) or not cn.strip():
         raise ClientCertError("no_cn")
-    if any(unicodedata.category(char) == "Cc" for char in cn):
+    if cn != cn.strip() or any(unicodedata.category(char) in _BAD_CN_CATEGORIES for char in cn):
         raise ClientCertError("bad_cn")
     return ClientCert(cn=cn, subject=subject, issuer=issuer, serial=serial)

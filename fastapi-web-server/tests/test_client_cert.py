@@ -2,6 +2,7 @@
 
 import base64
 import logging
+import unicodedata
 import uuid
 from urllib.parse import unquote_plus
 
@@ -36,6 +37,21 @@ OLD_HEADERS = {
     "X-Client-Cert-Subject": "CN={cn},O=Test Org,C=US",
     "X-Client-Cert-Issuer": "CN=Test CA",
     "X-Client-Cert-Serial": "12345",
+}
+
+# One character per Unicode category the CN check refuses besides Cc; escapes keep the file ASCII.
+# Cs has no entry: a surrogate is not valid UTF-8, so no certificate can carry one into a str.
+BAD_CN_CHARACTERS = {
+    "format": ("Cf", "\u202e"),
+    "line_separator": ("Zl", "\u2028"),
+    "paragraph_separator": ("Zp", "\u2029"),
+    "private_use": ("Co", "\ue000"),
+    "unassigned": ("Cn", "\u0378"),
+}
+EDGE_WHITESPACE_CNS = {
+    "leading": " alice",
+    "trailing": "alice ",
+    "trailing_no_break": "alice\u00a0",
 }
 
 
@@ -223,6 +239,15 @@ def _unknown_tls_feature_der() -> bytes:
     return der.replace(old, bytes.fromhex("020163"), 1)
 
 
+@pytest.mark.parametrize(("category", "char"), BAD_CN_CHARACTERS.values())
+def test_the_bad_cn_characters_really_have_the_category_they_stand_for(category, char):
+    assert unicodedata.category(char) == category
+
+
+def test_the_edge_whitespace_cns_really_differ_from_their_stripped_form():
+    assert all(cn != cn.strip() for cn in EDGE_WHITESPACE_CNS.values())
+
+
 def test_the_empty_cn_fixture_really_has_an_empty_cn():
     cert = x509.load_der_x509_certificate(_empty_cn_der())
     assert [a.value for a in cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)] == [""]
@@ -291,6 +316,22 @@ REFUSALS = {
         INVALID_CERT_BODY,
         "bad_cn",
     ),
+    **{
+        f"{label}_in_cn": (
+            _b64(_der(make_leaf([("CN", SECRET + char + "x")]))),
+            INVALID_CERT_BODY,
+            "bad_cn",
+        )
+        for label, (_, char) in BAD_CN_CHARACTERS.items()
+    },
+    **{
+        f"{label}_whitespace_in_cn": (
+            _b64(_der(make_leaf([("CN", cn)]))),
+            INVALID_CERT_BODY,
+            "bad_cn",
+        )
+        for label, cn in EDGE_WHITESPACE_CNS.items()
+    },
     "ca_without_basic_constraints": (
         _b64(_der(make_leaf([("CN", SECRET)], is_ca=None, usage=key_usage(key_cert_sign=True)))),
         INVALID_CERT_BODY,
