@@ -1,0 +1,25 @@
+# Defaults for generate-certs.sh. Copy this file to ~/.config/uudex/certs.conf
+# (or pass --config FILE) and edit it. Format: KEY = VALUE, one per line.
+# Comments start with # on a line of their own. A command-line option
+# overrides the matching value here.
+# Subject values may not contain / \ # $ " ' + (openssl reads them as syntax).
+
+# Subject fields shared by the CA, server and client certificates.
+C = US
+ST = Washington
+L = Richland
+O = UUDEX CA
+
+# Common name of the CA certificate.
+CA_CN = UUDEX CA
+
+# RSA key size in bits (2048 to 16384) and validity in days (1 to 999999).
+KEY_SIZE = 2048
+DAYS = 365
+
+# Names and addresses on the server certificate, separated by commas.
+DOMAINS = localhost, 127.0.0.1
+
+# Output folder: an absolute path, or one starting with ~/. Leave it out to
+# use ~/.config/uudex/tls, which keeps keys outside any repository.
+# OUTPUT_DIR = ~/.config/uudex/tls
