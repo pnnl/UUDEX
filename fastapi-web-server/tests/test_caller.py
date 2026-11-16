@@ -156,6 +156,41 @@ async def test_demoted_admin_loses_the_admin_view_on_the_next_request(cn):
     assert other_uuid not in {e["endpoint_uuid"] for e in after.json()}
 
 
+async def endpoint_id_for(certificate_dn: str) -> int:
+    async with get_db_session() as session:
+        result = await session.execute(
+            select(m.EndPoint).where(m.EndPoint.certificate_dn == certificate_dn)
+        )
+        return result.scalar_one().endpoint_id
+
+
+async def test_non_admin_cannot_read_another_participants_endpoint_by_id(cn):
+    mine, other = await seed_participant(), await seed_participant()
+    await seed_endpoint(mine, cn)
+    await seed_endpoint(other, f"{cn}-other")
+    own_id, other_id = await endpoint_id_for(cn), await endpoint_id_for(f"{cn}-other")
+    async with trusted_client() as c:
+        denied = await c.get(f"/endpoint/{other_id}", headers=identity_headers(cn))
+        allowed = await c.get(f"/endpoint/{own_id}", headers=identity_headers(cn))
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "Not authorized to view this endpoint"
+    assert allowed.status_code == 200
+    assert allowed.json()["endpoint_id"] == own_id
+
+
+async def test_non_admin_cannot_read_another_participants_subject_by_id(cn):
+    mine, other = await seed_participant(), await seed_participant()
+    await seed_endpoint(mine, cn)
+    mine_id, other_id = await seed_subject(mine), await seed_subject(other)
+    async with trusted_client() as c:
+        denied = await c.get(f"/subject/{other_id}", headers=identity_headers(cn))
+        allowed = await c.get(f"/subject/{mine_id}", headers=identity_headers(cn))
+    assert denied.status_code == 403
+    assert denied.json()["detail"] == "Not authorized to view this subject"
+    assert allowed.status_code == 200
+    assert allowed.json()["subject_id"] == mine_id
+
+
 def _uses_current_user(dependant) -> bool:
     return any(d.call is get_current_user or _uses_current_user(d) for d in dependant.dependencies)
 
