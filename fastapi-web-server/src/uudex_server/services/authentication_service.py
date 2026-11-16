@@ -5,9 +5,6 @@ import threading
 import time
 from collections.abc import Callable
 from functools import wraps
-from typing import Annotated
-
-from fastapi import Request
 
 from uudex_server.core.settings import Settings
 from uudex_server.models.authenticated_user import AuthenticatedUser
@@ -81,20 +78,6 @@ class EndpointCache:
 
 
 authentication_cache = EndpointCache(max_size=100, ttl_seconds=3600)
-
-
-async def get_request_user(request: Annotated[Request, Request]) -> AuthenticatedUser | None:
-    """
-    Get authenticated user from request state, using the certificate CN stored by middleware.
-    """
-    cert_cn = getattr(request.state, "cert_cn", None)
-
-    if not cert_cn:
-        return None
-
-    # This would need a database session - better to use the dependency instead
-    # For now, return None to indicate we need to use the proper dependency
-    return None
 
 
 def authenticate(func: Callable) -> Callable:
