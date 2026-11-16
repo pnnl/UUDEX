@@ -125,16 +125,23 @@ check_days() {
 # config. In -subj, / starts a field, \ escapes and + makes a multi-valued
 # name; in the config, # starts a comment, $ expands, quotes group and \
 # escapes. Each would make the CA, server and client subjects differ or add
-# fields. = , ; & % : @ [ ] pass through unchanged and are allowed.
+# fields. = , ; & % : @ [ ] pass through unchanged and are allowed. Edge
+# whitespace is refused because the server request config drops it while -subj
+# keeps it, so the three certificates would carry different values.
 check_subject_value() {
     local label="$1" value="$2"
     local bad_re='[/\#$"'"'"'+[:cntrl:]]'
+    local edge_space_re='^[[:space:]]|[[:space:]]$'
     if [[ "$value" =~ $bad_re ]]; then
         if [[ "${BASH_REMATCH[0]}" == [[:cntrl:]] ]]; then
             echo "Error: $label contains a control character, which openssl would misread in a certificate subject" >&2
         else
             echo "Error: $label contains the character '${BASH_REMATCH[0]}', which openssl would misread in a certificate subject" >&2
         fi
+        exit 1
+    fi
+    if [[ "$value" =~ $edge_space_re ]]; then
+        echo "Error: $label has leading or trailing whitespace; remove it" >&2
         exit 1
     fi
 }

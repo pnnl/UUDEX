@@ -834,6 +834,44 @@ assert_subject_refused() {
     done
 }
 
+@test "subject values: leading or trailing whitespace is refused on the command line, writing nothing" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local v opt i=0
+    for v in " Acme" "Acme " " Acme "; do
+        for opt in --country --state --city --org --ca-name; do
+            i=$((i + 1))
+            PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$BATS_TEST_TMPDIR/w$i"
+            [ "$status" -ne 0 ] || { echo "accepted '$v' in $opt"; return 1; }
+            [[ "$output" == *"$(cli_label "$opt") has leading or trailing whitespace"* ]] || { echo "$opt '$v': $output"; return 1; }
+            [[ "$output" != *"step failed"* ]] || { echo "$opt '$v' got past the checks: $output"; return 1; }
+            [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+        done
+        i=$((i + 1))
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$BATS_TEST_TMPDIR/w$i"
+        [ "$status" -ne 0 ] || { echo "accepted '$v' as ORG"; return 1; }
+        [[ "$output" == *"$ORG_LABEL has leading or trailing whitespace"* ]] || { echo "ORG '$v': $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+        i=$((i + 1))
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$BATS_TEST_TMPDIR/w$i"
+        [ "$status" -ne 0 ] || { echo "accepted '$v' as CLIENT_NAME"; return 1; }
+        [[ "$output" == *"CLIENT_NAME has leading or trailing whitespace"* ]] || { echo "CLIENT_NAME '$v': $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/w$i" ]
+    done
+    [ -z "$(ls -A "$WORKDIR")" ]
+}
+
+@test "subject values: the config trims edge whitespace, so all three certificates carry the same value" {
+    cd "$WORKDIR"
+    write_conf "O =    Acme   " "KEY_SIZE = 2048"
+    run timeout 60 "$GEN_SCRIPT" alice --config "$CONF" --domain host.example -o "$BATS_TEST_TMPDIR/o"
+    [ "$status" -eq 0 ]
+    local f
+    for f in ca alice server; do
+        [[ "$(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")" == *",O=Acme,"* ]] || { echo "$f: $(subject_of "$BATS_TEST_TMPDIR/o/$f.crt")"; return 1; }
+    done
+}
+
 @test "subject values: = , ; & % : @ ( ) [ ] and spaces are allowed and read back the same from every certificate" {
     cd "$WORKDIR"
     write_conf "O = R&D, Inc. (West) = 100% ok; a:b @c [d]" "KEY_SIZE = 2048"
