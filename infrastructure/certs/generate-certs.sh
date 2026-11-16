@@ -148,6 +148,12 @@ check_subject_value() {
 
 IPV4_RE='^[0123456789]{1,3}(\.[0123456789]{1,3}){3}$'
 
+# The one place that decides whether a server name is an IP address (SAN type
+# IP) rather than a DNS name.
+is_ip_name() {
+    [[ "$1" == *:* || "$1" =~ $IPV4_RE ]]
+}
+
 # Each field is 1 to 4 hex digits; "::" stands for one or more zero fields and
 # may appear once. Dotted-quad tails are not accepted.
 is_ipv6() {
@@ -192,7 +198,7 @@ check_domain() {
         echo "Error: $label '$value' is not a DNS name or IP address (letters, digits, '.', '-', '_' and '*' only)" >&2
         exit 1
     fi
-    if [[ "$value" =~ $IPV4_RE ]]; then
+    if is_ip_name "$value"; then
         local -a octets
         IFS=. read -ra octets <<< "$value"
         for octet in "${octets[@]}"; do
@@ -663,7 +669,7 @@ EOF
     # An IP address in a DNS entry never matches a client that connects by IP.
     local dns_i=1 ip_i=1
     for domain in "${domains[@]}"; do
-        if [[ "$domain" == *:* || "$domain" =~ $IPV4_RE ]]; then
+        if is_ip_name "$domain"; then
             echo "IP.${ip_i} = $domain" >> "$config_file"
             ip_i=$((ip_i + 1))
         else
