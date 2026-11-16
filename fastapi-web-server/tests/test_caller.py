@@ -171,20 +171,38 @@ def _mounted_api_routes(routes) -> list[APIRoute]:
     return found
 
 
+def _route_pairs(routes) -> set[tuple[str, str]]:
+    return {(method, route.path) for route in routes for method in route.methods}
+
+
 def _caller_routes() -> list[tuple[str, str]]:
     return sorted(
-        (method, route.path)
-        for route in _mounted_api_routes(app.routes)
-        if _uses_current_user(route.dependant)
-        for method in route.methods
+        _route_pairs(r for r in _mounted_api_routes(app.routes) if _uses_current_user(r.dependant))
     )
 
 
-def test_the_sweep_covers_the_mounted_routes_that_take_a_caller():
-    routes = _caller_routes()
-    assert ("GET", "/subjects/") in routes
-    assert ("GET", "/endpoint/") in routes
-    assert len(routes) >= 20
+# Mounted routes that do not take a caller. Every other mounted route must.
+_NO_CALLER = {
+    ("GET", "/"): "public root page",
+    ("GET", "/docs"): "framework API docs",
+    ("GET", "/openapi.json"): "framework API schema",
+    ("POST", "/endpoint/"): "takes an optional caller so the first endpoint can bootstrap",
+    ("GET", "/participants/"): "known gap, tracked in #48",
+    ("POST", "/participants/"): "known gap, tracked in #48",
+    ("GET", "/subscription/{subscription_uuid}"): "known gap, tracked in #48",
+}
+
+
+def test_every_mounted_route_takes_a_caller_unless_allowlisted():
+    mounted = _route_pairs(_mounted_api_routes(app.routes))
+    stale = set(_NO_CALLER) - mounted
+    assert not stale, f"allowlisted routes that are no longer mounted: {sorted(stale)}"
+    assert set(_caller_routes()) == mounted - set(_NO_CALLER), (
+        "mounted routes that lost their caller: "
+        f"{sorted(mounted - set(_NO_CALLER) - set(_caller_routes()))}; "
+        "allowlisted routes that now take one: "
+        f"{sorted(set(_NO_CALLER) & set(_caller_routes()))}"
+    )
 
 
 @pytest.mark.parametrize(("method", "path"), _caller_routes())
