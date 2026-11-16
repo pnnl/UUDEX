@@ -127,9 +127,14 @@ check_days() {
 # escapes. Each would make the CA, server and client subjects differ or add
 # fields. = , ; & % : @ [ ] pass through unchanged and are allowed. Edge
 # whitespace is refused because the server request config drops it while -subj
-# keeps it, so the three certificates would carry different values.
+# keeps it, so the three certificates would carry different values. Non-ASCII
+# is refused because -subj without -utf8 double-encodes it, and the existing-CA
+# comparison would then warn on every reuse. The check runs in the C locale so
+# a UTF-8 locale cannot change what counts as a non-ASCII byte.
 check_subject_value() {
+    local LC_ALL=C
     local label="$1" value="$2"
+    local non_ascii_re='[^ -~]'
     local bad_re='[/\#$"'"'"'+[:cntrl:]]'
     local edge_space_re='^[[:space:]]|[[:space:]]$'
     if [[ "$value" =~ $bad_re ]]; then
@@ -138,6 +143,10 @@ check_subject_value() {
         else
             echo "Error: $label contains the character '${BASH_REMATCH[0]}', which openssl would misread in a certificate subject" >&2
         fi
+        exit 1
+    fi
+    if [[ "$value" =~ $non_ascii_re ]]; then
+        echo "Error: $label contains a non-ASCII character; use ASCII only" >&2
         exit 1
     fi
     if [[ "$value" =~ $edge_space_re ]]; then
@@ -265,7 +274,10 @@ trim() {
 
 # The file is parsed, never sourced: it holds KEY = VALUE lines and nothing in
 # it is executed. Every value passes the checks its command-line twin does.
+# The C locale keeps a byte that is invalid in the user's locale from failing
+# the line pattern with a misleading "expected KEY = VALUE".
 parse_config() {
+    local LC_ALL=C
     local lineno=0 line key value seen=" " label item rest
     local line_re='^([A-Za-z_]+)[[:space:]]*=[[:space:]]*(.*)$'
     while IFS= read -r line || [ -n "$line" ]; do

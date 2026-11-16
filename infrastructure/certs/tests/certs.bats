@@ -834,6 +834,53 @@ assert_subject_refused() {
     done
 }
 
+# Values are built with printf escapes so this file stays ASCII: an accented
+# letter, and a byte that is not valid UTF-8.
+assert_non_ascii_refused() {
+    local locale="$1" i=0 opt key v
+    cd "$WORKDIR"
+    fake_openssl_failing
+    for v in "$(printf 'Caf\303\251')" "$(printf 'a\377b')"; do
+        for opt in --country --state --city --org --ca-name; do
+            i=$((i + 1))
+            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 "$opt" "$v" -o "$BATS_TEST_TMPDIR/a$i"
+            [ "$status" -ne 0 ] || { echo "accepted a non-ASCII value in $opt"; return 1; }
+            [[ "$output" == *"$(cli_label "$opt") contains a non-ASCII character"* ]] || { echo "$opt: $output"; return 1; }
+            [[ "$output" != *"step failed"* ]] || { echo "$opt got past the checks: $output"; return 1; }
+            [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        done
+        i=$((i + 1))
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice "$v" -k 2048 -o "$BATS_TEST_TMPDIR/a$i"
+        [[ "$status" -ne 0 && "$output" == *"$ORG_LABEL contains a non-ASCII character"* ]] || { echo "ORG: $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        i=$((i + 1))
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" "$v" -k 2048 -o "$BATS_TEST_TMPDIR/a$i"
+        [[ "$status" -ne 0 && "$output" == *"CLIENT_NAME contains a non-ASCII character"* ]] || { echo "CLIENT_NAME: $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        for key in C ST L O CA_CN; do
+            i=$((i + 1))
+            write_conf "$key = $v"
+            LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" alice -k 2048 --config "$CONF" -o "$BATS_TEST_TMPDIR/a$i"
+            [ "$status" -ne 0 ] || { echo "accepted a non-ASCII value in $key"; return 1; }
+            [[ "$output" == *"$CONF line 1: $key contains a non-ASCII character"* ]] || { echo "$key: $output"; return 1; }
+            [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+        done
+        i=$((i + 1))
+        LC_ALL="$locale" PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 --domain "$v" -o "$BATS_TEST_TMPDIR/a$i"
+        [ "$status" -ne 0 ] || { echo "accepted a non-ASCII server name"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/a$i" ]
+    done
+}
+
+@test "subject values: a non-ASCII value is refused on the command line and in the config, writing nothing (C locale)" {
+    assert_non_ascii_refused C
+}
+
+@test "subject values: a non-ASCII value is refused the same way under a UTF-8 locale" {
+    locale -a | /usr/bin/grep -qix 'en_US.utf-\?8' || skip "en_US.UTF-8 locale is not installed"
+    assert_non_ascii_refused en_US.UTF-8
+}
+
 @test "subject values: leading or trailing whitespace is refused on the command line, writing nothing" {
     cd "$WORKDIR"
     fake_openssl_failing
