@@ -907,7 +907,8 @@ assert_subject_refused() {
         [ "$status" -ne 0 ] || { echo "accepted --domain $bad"; return 1; }
         [[ "$output" == *"--domain '$bad' is not a"* ]] || { echo "--domain $bad: $output"; return 1; }
         [[ "$output" != *"step failed"* ]] || { echo "--domain $bad got past the checks: $output"; return 1; }
-        [ ! -e "$BATS_TEST_TMPDIR/d$i/ca.key" ] && [ ! -e "$BATS_TEST_TMPDIR/d$i" ]
+        [ ! -e "$BATS_TEST_TMPDIR/d$i/ca.key" ]
+        [ ! -e "$BATS_TEST_TMPDIR/d$i" ]
         write_conf "DOMAINS = ok.example, $bad"
         PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/e$i" --config "$CONF"
         [ "$status" -ne 0 ] || { echo "accepted DOMAINS $bad"; return 1; }
