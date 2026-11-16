@@ -9,6 +9,11 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from uudex_server.core import get_logger
+from uudex_server.core.client_cert import (
+    FORWARDED_CERT_HEADER,
+    ClientCertError,
+    parse_forwarded_cert,
+)
 from uudex_server.core.settings import Settings, get_settings
 from uudex_server.services.database_service import init_db, shutdown_db
 
@@ -80,6 +85,12 @@ add_routers(app)
 
 PUBLIC_PATHS = frozenset({"/docs", "/openapi.json"})
 UNTRUSTED_PEER_BODY = "Request not from a trusted proxy."
+INVALID_CERT_BODY = "Invalid certificate."
+CERT_REFUSAL_BODIES = {
+    "absent": "No certificate detected.",
+    "empty": "No certificate detected.",
+    "no_cn": "No Common Name found in certificate.",
+}
 
 
 def _is_trusted_peer(peer: str | None) -> bool:
@@ -111,34 +122,24 @@ async def check_ssl_cert(
         logger.debug("Public endpoint accessed, skipping certificate check.")
         return await call_next(request)
 
-    # The identity headers are believed only from a trusted proxy, and the peer is checked
+    # The forwarded certificate is believed only from a trusted proxy, and the peer is checked
     # before any of them is read, so an untrusted peer cannot make them reach the log or parser.
     peer = request.client.host if request.client else None
     if not _is_trusted_peer(peer):
         logger.warning(f"Refused request from untrusted peer {peer}")
         return JSONResponse(status_code=401, content=UNTRUSTED_PEER_BODY)
 
-    # Check for the verifying proxy's client certificate headers
-    cert_subject = request.headers.get("X-Client-Cert-Subject")
-    cert_issuer = request.headers.get("X-Client-Cert-Issuer")
-    cert_serial = request.headers.get("X-Client-Cert-Serial")
-    if not cert_subject:
-        return JSONResponse(status_code=401, content="No certificate detected.")
+    # The proxy verified the chain; the app only reads the leaf it forwards and never re-verifies.
+    headers = request.headers.getlist(FORWARDED_CERT_HEADER)
+    try:
+        if len(headers) > 1:
+            raise ClientCertError("multiple_headers")
+        cert = parse_forwarded_cert(headers[0] if headers else None)
+    except ClientCertError as e:
+        logger.warning(f"Refused client certificate: {e.reason}")
+        return JSONResponse(status_code=401, content=CERT_REFUSAL_BODIES.get(e.reason, INVALID_CERT_BODY))
 
-    logger.debug(f"Certificate subject: {cert_subject}")
-    logger.debug(f"Certificate issuer: {cert_issuer}")
-    logger.debug(f"Certificate serial: {cert_serial}")
-
-    # Extract CN from subject DN (format: CN=alice,O=Acme Corp,C=US)
-    cn = None
-    for part in cert_subject.split(","):
-        if part.strip().startswith("CN="):
-            cn = part.strip()[3:]  # Remove 'CN=' prefix
-            break
-
-    if not cn:
-        return JSONResponse(status_code=401, content="No Common Name found in certificate.")
-
+    cn = cert.cn
     logger.debug(f"Extracted CN: {cn}")
 
     # For now, let's skip the database check to test the basic functionality
@@ -164,9 +165,9 @@ async def check_ssl_cert(
     """
 
     # Store certificate info in request state for use in endpoints
-    request.state.cert_subject = cert_subject
-    request.state.cert_issuer = cert_issuer
-    request.state.cert_serial = cert_serial
+    request.state.cert_subject = cert.subject
+    request.state.cert_issuer = cert.issuer
+    request.state.cert_serial = cert.serial
     request.state.cert_cn = cn
 
     return await call_next(request)

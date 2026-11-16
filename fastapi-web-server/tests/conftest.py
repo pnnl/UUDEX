@@ -1,11 +1,19 @@
+import base64
+import datetime
+import functools
 import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import NameOID
 from httpx import AsyncClient
 
+from uudex_server.core.client_cert import FORWARDED_CERT_HEADER
 from uudex_server.core.settings import Settings, get_settings
 from uudex_server.main import app
 from uudex_server.repos import DatasetDefinitionRepository
@@ -69,15 +77,72 @@ def read_cert_file(filename: str) -> str:
         return f.read().strip()
 
 
+_NAME_OIDS = {"CN": NameOID.COMMON_NAME, "O": NameOID.ORGANIZATION_NAME, "C": NameOID.COUNTRY_NAME}
+
+
+def _name(attrs: list[tuple[str, str]]) -> x509.Name:
+    return x509.Name([x509.NameAttribute(_NAME_OIDS[key], value) for key, value in attrs])
+
+
+def _build_cert(
+    subject: x509.Name,
+    issuer: x509.Name,
+    public_key: ec.EllipticCurvePublicKey,
+    signing_key: ec.EllipticCurvePrivateKey,
+    *,
+    is_ca: bool,
+) -> x509.Certificate:
+    now = datetime.datetime.now(datetime.UTC)
+    return (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(public_key)
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(now - datetime.timedelta(days=1))
+        .not_valid_after(now + datetime.timedelta(days=1))
+        .add_extension(x509.BasicConstraints(ca=is_ca, path_length=None), critical=True)
+        .sign(signing_key, hashes.SHA256())
+    )
+
+
+@functools.cache
+def ca_pair() -> tuple[ec.EllipticCurvePrivateKey, x509.Certificate]:
+    """A CA made for the test session; no key or certificate file is kept."""
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = _name([("CN", "Test CA")])
+    return key, _build_cert(name, name, key.public_key(), key, is_ca=True)
+
+
+def make_leaf(attrs: list[tuple[str, str]]) -> x509.Certificate:
+    """A leaf signed by the test CA, with exactly the subject attributes given."""
+    ca_key, ca_cert = ca_pair()
+    key = ec.generate_private_key(ec.SECP256R1())
+    return _build_cert(_name(attrs), ca_cert.subject, key.public_key(), ca_key, is_ca=False)
+
+
+def b64_der(cert: x509.Certificate) -> str:
+    """The proxy's encoding of one certificate: plain base64 DER, not URL-escaped."""
+    return base64.b64encode(cert.public_bytes(serialization.Encoding.DER)).decode("ascii")
+
+
+def forwarded_chain(leaf: x509.Certificate) -> str:
+    """The forwarded header value for a verified leaf: the leaf, then the CA."""
+    return f"{b64_der(leaf)},{b64_der(ca_pair()[1])}"
+
+
 def identity_headers(cn: str | None = None, *, subject: str | None = None) -> dict[str, str]:
-    """Identity headers as the verifying proxy sends them; the one place tests build them."""
+    """Identity headers as the verifying proxy sends them; the one place tests build them.
+
+    `subject` is a comma-separated DN such as "CN=alice,O=Org"; an empty one means the
+    proxy forwarded no certificate.
+    """
     if subject is None:
         subject = f"CN={cn},O=Test Org,C=US"
-    return {
-        "X-Client-Cert-Subject": subject,
-        "X-Client-Cert-Issuer": "CN=Test CA",
-        "X-Client-Cert-Serial": "12345",
-    }
+    if not subject:
+        return {}
+    attrs = [tuple(part.strip().split("=", 1)) for part in subject.split(",")]
+    return {FORWARDED_CERT_HEADER: forwarded_chain(make_leaf(attrs))}
 
 
 @pytest.fixture
