@@ -966,6 +966,61 @@ assert_subject_refused() {
     [ ! -e "$BATS_TEST_TMPDIR/nl" ]
 }
 
+@test "domains: malformed DNS names and digit-and-dot names are refused before ca.key exists, from the option and from the config" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local label64 i=0 c bad want
+    label64=$(printf '%064d' 0 | tr 0 a)
+    [ "${#label64}" -eq 64 ]
+    for c in "1.2.3|is not a valid IPv4 address" "1234.1.1.1|is not a valid IPv4 address" \
+             "1.2.3.4.5|is not a valid IPv4 address" "123|is not a valid IPv4 address" \
+             "..|an empty label" ".example|an empty label" "foo..example|an empty label" "example.|an empty label" \
+             "foo.-bar.example|starts or ends with '-'" "a-.example|starts or ends with '-'" "foo.bar-|starts or ends with '-'" \
+             "a*.example|'*' may only be the whole first label" "*a.example|'*' may only be the whole first label" \
+             "foo.*.example|'*' may only be the whole first label" "*.*.example|'*' may only be the whole first label" \
+             "foo.example.*|'*' may only be the whole first label" \
+             "$label64.example|longer than 63 characters"; do
+        bad="${c%%|*}" want="${c#*|}"
+        i=$((i + 1))
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/n$i" --domain "$bad"
+        [ "$status" -ne 0 ] || { echo "accepted --domain $bad"; return 1; }
+        [[ "$output" == *"--domain '$bad' "*"$want"* ]] || { echo "--domain $bad: $output"; return 1; }
+        [[ "$output" != *"step failed"* ]] || { echo "--domain $bad got past the checks: $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/n$i/ca.key" ]
+        [ ! -e "$BATS_TEST_TMPDIR/n$i" ]
+        write_conf "DOMAINS = ok.example, $bad"
+        PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/m$i" --config "$CONF"
+        [ "$status" -ne 0 ] || { echo "accepted DOMAINS $bad"; return 1; }
+        [[ "$output" == *"$CONF line 1: DOMAINS '$bad' "*"$want"* ]] || { echo "DOMAINS $bad: $output"; return 1; }
+        [ ! -e "$BATS_TEST_TMPDIR/m$i" ]
+    done
+}
+
+@test "domains: a first name over 64 characters is refused before any key is written, a longer later name is accepted" {
+    cd "$WORKDIR"
+    fake_openssl_failing
+    local long64 long65 label63
+    long64="$(printf '%040d' 0 | tr 0 a).$(printf '%023d' 0 | tr 0 b)"
+    long65="$(printf '%040d' 0 | tr 0 a).$(printf '%024d' 0 | tr 0 b)"
+    label63=$(printf '%063d' 0 | tr 0 a)
+    [ "${#long64}" -eq 64 ]
+    [ "${#long65}" -eq 65 ]
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l1" --domain "$long65" --domain ok.example
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"the first server name '$long65' is 65 characters"* ]]
+    [[ "$output" != *"step failed"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/l1" ]
+    write_conf "DOMAINS = $long65, ok.example"
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l2" --config "$CONF"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"the first server name '$long65' is 65 characters"* ]]
+    [ ! -e "$BATS_TEST_TMPDIR/l2" ]
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l3" --domain "$long64"
+    assert_passed_argument_checks
+    PATH="$FAKEBIN:$PATH" run timeout 5 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/l4" --domain ok.example --domain "$long65.$label63"
+    assert_passed_argument_checks
+}
+
 @test "domains: valid names and addresses are accepted, including a wildcard, 0.0.0.0 and 255.255.255.255" {
     cd "$WORKDIR"
     run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$BATS_TEST_TMPDIR/o" \

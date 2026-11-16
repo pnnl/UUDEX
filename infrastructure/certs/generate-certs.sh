@@ -183,9 +183,12 @@ is_ipv6() {
 
 # A server name must be a DNS name, a dotted IPv4 address or an IPv6 address.
 # It is written into the server request config as CN and a SAN entry, so the
-# allowed characters are listed rather than the bad ones.
+# allowed characters are listed rather than the bad ones. A DNS name has no
+# empty label, no label over 63 characters or starting or ending with "-", and
+# "*" only as the whole leftmost label.
 check_domain() {
-    local label="$1" value="$2" octet
+    local label="$1" value="$2" octet part n=0
+    local -a octets labels
     local dns_re='^[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789*_.-]+$'
     if [[ "$value" == *:* ]]; then
         is_ipv6 "$value" || {
@@ -199,7 +202,6 @@ check_domain() {
         exit 1
     fi
     if is_ip_name "$value"; then
-        local -a octets
         IFS=. read -ra octets <<< "$value"
         for octet in "${octets[@]}"; do
             if [[ "$octet" =~ ^0[0123456789] ]] || [ "$octet" -gt 255 ]; then
@@ -207,6 +209,41 @@ check_domain() {
                 exit 1
             fi
         done
+        return 0
+    fi
+    if [[ "$value" == .* || "$value" == *. || "$value" == *..* ]]; then
+        echo "Error: $label '$value' is not a valid DNS name (it has an empty label)" >&2
+        exit 1
+    fi
+    if [[ "$value" =~ ^[0123456789.]+$ ]]; then
+        echo "Error: $label '$value' is not a valid IPv4 address (four numbers 0 to 255 without leading zeros)" >&2
+        exit 1
+    fi
+    IFS=. read -ra labels <<< "$value"
+    for part in "${labels[@]}"; do
+        n=$((n + 1))
+        if [ "${#part}" -gt 63 ]; then
+            echo "Error: $label '$value' is not a valid DNS name (a label is longer than 63 characters)" >&2
+            exit 1
+        fi
+        if [[ "$part" == -* || "$part" == *- ]]; then
+            echo "Error: $label '$value' is not a valid DNS name (a label starts or ends with '-')" >&2
+            exit 1
+        fi
+        if [[ "$part" == *"*"* ]] && { [ "$part" != "*" ] || [ "$n" -gt 1 ]; }; then
+            echo "Error: $label '$value' is not a valid DNS name ('*' may only be the whole first label)" >&2
+            exit 1
+        fi
+    done
+}
+
+# The first server name becomes the certificate CN, which openssl limits to 64
+# characters; checked before any key is written.
+check_common_name_length() {
+    local name="$1"
+    if [ "${#name}" -gt 64 ]; then
+        echo "Error: the first server name '$name' is ${#name} characters; a certificate common name allows at most 64" >&2
+        exit 1
     fi
 }
 
@@ -585,6 +622,8 @@ else
     fi
 fi
 
+STEP="validate server names"
+check_common_name_length "${DOMAINS[0]}"
 STEP="validate numbers"
 check_key_size "--key-size" "$KEY_SIZE"
 check_days "--days" "$DAYS"
