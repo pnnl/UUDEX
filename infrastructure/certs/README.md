@@ -81,6 +81,7 @@ rather than adding to it. Nothing is required: the client name defaults to
 |--------|-------------|
 | `--domain DOMAIN` | Add a domain to the server certificate (repeatable) |
 | `--server-only` | Make only the server certificate |
+| `--force` | Replace existing client, server and `ca-trusted.crt` files (never the CA) |
 | `--list` | List existing certificates |
 | `-c, --country CODE` | Country code |
 | `-s, --state STATE` | State or province |
@@ -102,6 +103,31 @@ start with `-`. `--key-size` and `--days` accept ASCII digits only. The script
 checks all arguments before it writes any file, stops at the first failure
 with a message naming the step, and exits non-zero. `--list` on a folder that
 does not exist prints the reason to stderr and exits 1.
+
+### What is refused
+
+The script checks all of this before it makes any key, and a refused run
+changes nothing. Each message names the file or folder.
+
+- A client that already has `<name>.key`, `.crt` or `.p12`, and a
+  `ca-trusted.crt` that is not a copy of `ca.crt`. `--force` replaces them: the
+  new files are built beside the old ones and renamed over them, so a run that
+  fails keeps the old files.
+- Only one of `ca.key` and `ca.crt`, or a certificate with no CA. Restore the
+  CA or empty the folder; `--force` does not apply. A complete CA is reused and
+  never replaced.
+- A server key without its certificate, or the reverse (without `--force`). A
+  complete server certificate is reused, so a second client does not replace it;
+  use `--force` to make one for new `--domain` values.
+- A symbolic link, a directory, a pipe or a file owned by someone else in the
+  output folder. The output folder itself may not be a link. A link in a parent
+  is followed and the real parents are checked.
+- A non-empty folder without the `.uudex-certs` marker, which the script writes
+  when it makes a folder. An empty folder you made yourself is accepted and marked.
+- Any parent of the output folder, up to `/`, that the group or others can write
+  (sticky or not) or that is owned by neither you nor root. `/tmp/certs` is
+  refused for this reason.
+- A client named `ca`, `ca-trusted`, `server` or `localhost`.
 
 ## generate-certs-from-existing-postgres.sh
 
@@ -127,6 +153,8 @@ The CA:
 - `ca.crt`: CA certificate
 - `ca.key`: CA private key, keep it secret
 - `ca-trusted.crt`: copy of the CA certificate for servers that trust it
+- `ca.srl`: certificate serial counter
+- `.uudex-certs`: marker that this script made the folder
 
 The server (`generate-certs.sh` only):
 
