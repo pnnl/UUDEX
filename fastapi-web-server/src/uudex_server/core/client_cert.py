@@ -2,6 +2,7 @@
 
 import base64
 import binascii
+import unicodedata
 from dataclasses import dataclass
 
 from cryptography import x509
@@ -20,6 +21,12 @@ FORWARDED_CERT_HEADER = "X-Forwarded-Tls-Client-Cert"
 # A leaf plus its CA is about 3 KiB of base64; 16 KiB leaves room for a long chain
 # while stopping a client-sized body from reaching the base64 and DER parsers.
 MAX_HEADER_CHARS = 16384
+
+
+# cryptography reports a bad certificate with no common base class: ValueError for most
+# malformed DER, InvalidVersion for a version it does not know, DuplicateExtension from the
+# lazy extension parse, and TypeError from a name attribute of an unsupported string type.
+_PARSE_ERRORS = (ValueError, TypeError, x509.InvalidVersion, x509.DuplicateExtension)
 
 
 class ClientCertError(Exception):
@@ -48,33 +55,44 @@ def parse_forwarded_cert(value: str | None) -> ClientCert:
         raise ClientCertError("absent")
     if len(value) > MAX_HEADER_CHARS:
         raise ClientCertError("too_large")
+    if not value.strip():
+        raise ClientCertError("empty")
     leaf_b64 = value.split(",", 1)[0].strip()
     if not leaf_b64:
-        raise ClientCertError("empty")
+        raise ClientCertError("empty_leaf")
     try:
         der = base64.b64decode(leaf_b64, validate=True)
     except (binascii.Error, ValueError):
         raise ClientCertError("not_base64") from None
     try:
         cert = x509.load_der_x509_certificate(der)
+        extensions = cert.extensions
         try:
-            is_ca = cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+            is_ca = extensions.get_extension_for_class(x509.BasicConstraints).value.ca
         except x509.ExtensionNotFound:
+            # generate-certs.sh signs client certificates with no extensions at all.
             is_ca = False
+        try:
+            may_sign_certs = extensions.get_extension_for_class(x509.KeyUsage).value.key_cert_sign
+        except x509.ExtensionNotFound:
+            may_sign_certs = False
         names = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
         subject = cert.subject.rfc4514_string()
         issuer = cert.issuer.rfc4514_string()
         serial = cert.serial_number
-    except ValueError:
+    except _PARSE_ERRORS:
         raise ClientCertError("not_certificate") from None
     # The proxy sends the leaf first; a CA in that slot means a wrong order, never a caller.
-    if is_ca:
+    # A CA without BasicConstraints still declares itself through KeyUsage.
+    if is_ca or may_sign_certs:
         raise ClientCertError("ca_as_leaf")
     if not names:
         raise ClientCertError("no_cn")
     if len(names) > 1:
         raise ClientCertError("multiple_cn")
     cn = names[0].value
-    if not isinstance(cn, str) or not cn:
+    if not isinstance(cn, str) or not cn.strip():
         raise ClientCertError("no_cn")
+    if any(unicodedata.category(char) == "Cc" for char in cn):
+        raise ClientCertError("bad_cn")
     return ClientCert(cn=cn, subject=subject, issuer=issuer, serial=serial)
