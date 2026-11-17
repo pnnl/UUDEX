@@ -1,0 +1,49 @@
+# Dynamic configuration: TLS options, the one router and its middleware.
+tls:
+  # sniStrict only works when a certificate is listed here, as well as in the store below.
+  certificates:
+    - certFile: /certs/server.crt
+      keyFile: /certs/server.key
+  stores:
+    default:
+      defaultCertificate:
+        certFile: /certs/server.crt
+        keyFile: /certs/server.key
+  options:
+    # "default" applies to every router, so no SNI mismatch can pick a weaker option.
+    default:
+      minVersion: VersionTLS12
+      # TLS 1.2 only with ECDHE and an AEAD cipher: no CBC or SHA-1 suites. TLS 1.3 suites are fixed.
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+      sniStrict: true
+      clientAuth:
+        clientAuthType: RequireAndVerifyClientCert
+        caFiles:
+          - /certs/ca.crt
+
+http:
+  routers:
+    # EVERY router that reaches the server must carry the client-cert middleware. The app
+    # does not verify signatures: it believes the forwarded certificate, and only this
+    # middleware replaces whatever the client sent in that header.
+    api:
+      entryPoints: [websecure]
+      rule: "PathPrefix(`/`)"
+      middlewares: [client-cert]
+      service: server
+      tls: {}
+  middlewares:
+    client-cert:
+      passTLSClientCert:
+        pem: true
+  services:
+    server:
+      loadBalancer:
+        servers:
+          - url: "http://server:8000"
