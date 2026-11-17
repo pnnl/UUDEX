@@ -7,6 +7,109 @@ set -Eeuo pipefail
 STEP="starting up"
 trap 'echo "Error: step failed: $STEP (exit status $?)" >&2' ERR
 
+# Everything is built in a staging folder inside the output folder and moved
+# into place at the end. If the move fails or is cut off by INT, TERM or HUP,
+# the files already moved are put back from the copies kept in the staging
+# folder, so the output folder is as it was. Only a kill -9 during the move can
+# leave a mixed set, and then the staging folder is left behind holding the
+# old files.
+STAGE=""
+MARKER=".uudex-certs"
+COMMITTING=false
+KEEP_STAGE=false
+MOVING=""
+PLACED=()
+BACKED=()
+
+in_list() {
+    local want="$1" item
+    shift
+    for item in "$@"; do
+        if [ "$item" = "$want" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Undoes a move that did not finish: a file that replaced an old one gets the
+# old one back, a file that was new is removed. Runs once; it must complete
+# before the staging folder, which holds the copies, is deleted. If any file
+# cannot be undone the staging folder stays, and the message says where.
+rollback_commit() {
+    local i name dest old msg restored=() removed=() stuck=() refused=() kept=()
+    [ "$COMMITTING" = true ] || return 0
+    # Ignored first: a signal between the two lines would run cleanup with
+    # COMMITTING already false, skip this rollback and delete the copies.
+    trap '' INT TERM HUP
+    COMMITTING=false
+    # Bash runs a signal trap only after the running mv returns, so the file
+    # being moved may already be in place without being in PLACED: the staged
+    # source being gone says the move happened.
+    if [ -n "$MOVING" ] && [ ! -e "$STAGE/$MOVING" ] && ! in_list "$MOVING" "${PLACED[@]+"${PLACED[@]}"}"; then
+        PLACED+=("$MOVING")
+    fi
+    MOVING=""
+    for ((i = ${#PLACED[@]} - 1; i >= 0; i--)); do
+        name="${PLACED[i]}"
+        dest="$CERTS_DIR/$name"
+        if [ -L "$dest" ] || [ -d "$dest" ]; then
+            refused+=("$name")
+        elif in_list "$name" "${BACKED[@]+"${BACKED[@]}"}"; then
+            if mv -f -- "$STAGE/.old/$name" "$dest"; then
+                restored+=("$name")
+            else
+                stuck+=("$name")
+            fi
+        elif rm -f -- "${dest:?}"; then
+            removed+=("$name")
+        else
+            stuck+=("$name")
+        fi
+    done
+    if [ ${#stuck[@]} -gt 0 ] || [ ${#refused[@]} -gt 0 ]; then
+        KEEP_STAGE=true
+        shopt -s nullglob dotglob
+        for old in "$STAGE/.old"/*; do
+            kept+=("${old##*/}")
+        done
+        shopt -u nullglob dotglob
+        echo "Error: the move into $CERTS_DIR was cut off and could not be fully undone." >&2
+        if [ ${#stuck[@]} -gt 0 ]; then
+            echo "Error: could not put back or remove: ${stuck[*]}" >&2
+        fi
+        if [ ${#refused[@]} -gt 0 ]; then
+            echo "Error: left alone because a link or a folder is in their place: ${refused[*]}" >&2
+        fi
+        echo "Error: the old files are kept in $STAGE/.old: ${kept[*]+"${kept[*]}"}; check them against the files in $CERTS_DIR, move the ones you need back, then remove $STAGE" >&2
+    elif [ ${#restored[@]} -gt 0 ] || [ ${#removed[@]} -gt 0 ]; then
+        msg="the move into $CERTS_DIR was cut off"
+        if [ ${#restored[@]} -gt 0 ]; then
+            msg+="; put back as they were: ${restored[*]}"
+        fi
+        if [ ${#removed[@]} -gt 0 ]; then
+            msg+="; removed because this run made them: ${removed[*]}"
+        fi
+        echo "Error: $msg" >&2
+    fi
+}
+
+cleanup() {
+    rollback_commit
+    if [ "$KEEP_STAGE" = false ] && [[ -n "$STAGE" && "$STAGE" == */.staging.* ]]; then
+        rm -rf -- "${STAGE:?}"
+    fi
+}
+trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
+trap 'cleanup; exit 130' INT
+trap 'cleanup; exit 143' TERM
+
+die() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
 # Default values
 DEFAULT_CLIENT_NAME="client"
 DEFAULT_ORG="Organization"
@@ -40,10 +143,100 @@ resolve_certs_dir() {
     fi
 }
 
+# ls prints the mode and, with -n, the numeric owner: PI_MODE and PI_UID.
+path_info() {
+    local line
+    line=$(ls -ldn -- "$1") || return 1
+    PI_MODE="${line%% *}"
+    read -r _ _ PI_UID _ <<< "$line"
+}
+
+# A parent that others can write lets them swap the output folder or what is
+# above it. Sticky does not help: the owner of an entry can still be replaced.
+check_parents() {
+    local p="$1" me
+    me=$(id -u)
+    while :; do
+        path_info "$p" || die "cannot read the permissions of $p, a parent of output folder $CERTS_DIR"
+        if [ "${PI_MODE:5:1}" = "w" ] || [ "${PI_MODE:8:1}" = "w" ]; then
+            die "$p, a parent of output folder $CERTS_DIR, is writable by other users; choose a folder whose parents only you or root can write"
+        fi
+        if [ "$PI_UID" != "$me" ] && [ "$PI_UID" != "0" ]; then
+            die "$p, a parent of output folder $CERTS_DIR, is owned by neither you nor root"
+        fi
+        if [ "$p" = "/" ]; then
+            break
+        fi
+        p=$(dirname -- "$p")
+    done
+}
+
+# Makes CERTS_DIR absolute and free of symbolic links, so every check below
+# and every write uses the same real path. The folder itself may not be a
+# link; a link in a parent is followed and the real parents are checked.
+resolve_physical_dir() {
+    local path="$CERTS_DIR" existing rest phys
+    [[ "$path" == /* ]] || path="$PWD/$path"
+    while [[ "$path" == */ && "$path" != "/" ]]; do
+        path="${path%/}"
+    done
+    if [ -L "$path" ]; then
+        die "output folder $CERTS_DIR is a symbolic link; give the real folder"
+    fi
+    existing="$path"
+    while [ ! -e "$existing" ] && [ ! -L "$existing" ]; do
+        existing=$(dirname -- "$existing")
+    done
+    if [ ! -d "$existing" ]; then
+        die "$existing is not a directory, so output folder $CERTS_DIR cannot be made under it"
+    fi
+    rest="${path#"$existing"}"
+    if [[ "$rest" =~ (^|/)\.\.?(/|$) ]]; then
+        die "output folder $CERTS_DIR has a '.' or '..' part below a folder that does not exist yet"
+    fi
+    phys=$(cd -P -- "$existing" && pwd -P) || die "cannot resolve $existing"
+    CERTS_DIR="${phys%/}${rest:+/${rest#/}}"
+    if [ -z "$rest" ]; then
+        PARENT_START=$(dirname -- "$CERTS_DIR")
+    else
+        PARENT_START="$phys"
+    fi
+}
+
+# Every entry already in the folder must be a regular file of yours. A
+# .staging.* folder is the one other entry this script makes itself; it is not
+# removed here because a run still going in the same folder looks the same.
+# A folder that has files but no marker was not made by this version.
+check_folder_contents() {
+    local entry
+    shopt -s nullglob dotglob
+    FOLDER_ENTRIES=("$CERTS_DIR"/*)
+    shopt -u nullglob dotglob
+    for entry in "${FOLDER_ENTRIES[@]+"${FOLDER_ENTRIES[@]}"}"; do
+        if [ -L "$entry" ]; then
+            die "$entry is a symbolic link; remove it or choose another output folder"
+        fi
+        if [ -d "$entry" ] && [[ "${entry##*/}" == .staging.* ]]; then
+            die "$entry is a staging folder left by a run of this script that was cut off, or a run still going; if none is going, first move the files in $entry/.old back into $CERTS_DIR (they are the old copies of files a cut-off --force run replaced, and the new ones may not match the rest), check that each key matches its certificate, then remove the staging folder with rm -r"
+        fi
+        if [ ! -f "$entry" ]; then
+            die "$entry is not a regular file; remove it or choose another output folder"
+        fi
+        if [ ! -O "$entry" ]; then
+            die "$entry is not owned by you; remove it or choose another output folder"
+        fi
+    done
+    if [ ${#FOLDER_ENTRIES[@]} -gt 0 ] && [ ! -e "$CERTS_DIR/$MARKER" ]; then
+        die "output folder $CERTS_DIR is not empty and has no $MARKER marker, so this version of the script did not make it. An older version, or generate-certs-from-existing-postgres.sh, may have: if it holds your CA and certificates, check them, then create an empty file named $MARKER in it to use it. Do not start a new CA beside them, because the certificates the old CA signed would stop matching. Otherwise use an empty folder"
+    fi
+}
+
 # Keys go in this folder, so refuse one that others can write or that another
 # user owns: an existing ca.key there would be reused and a planted symlink
-# would be followed.
+# would be followed. Nothing is created until every parent has passed.
 prepare_certs_dir() {
+    resolve_physical_dir
+    check_parents "$PARENT_START"
     (umask 077 && mkdir -p "$CERTS_DIR") || {
         echo "Error: cannot create output folder $CERTS_DIR" >&2
         exit 1
@@ -65,6 +258,7 @@ prepare_certs_dir() {
         echo "Error: output folder $CERTS_DIR is writable by other users; run chmod go-w on it or choose another" >&2
         exit 1
     fi
+    check_folder_contents
 }
 
 # A value, from an option or from the config file, must not be blank or
@@ -405,6 +599,7 @@ show_help() {
     echo "  --config FILE       Read defaults from FILE (default: $DEFAULT_CONFIG_FILE, if it exists)"
     echo "  --domain DOMAIN     Add domain to server certificate (can be used multiple times)"
     echo "  --server-only       Generate only server certificate with specified domains"
+    echo "  --force             Replace existing client, server and ca-trusted files (never the CA)"
     echo "  --list              List existing certificates in the output directory"
     echo "  -h, --help          Show this help message"
     echo ""
@@ -486,6 +681,7 @@ DAYS=""
 KEY_SIZE=""
 LIST_CERTS=false
 SERVER_ONLY=false
+FORCE=false
 DOMAINS=()  # Array to store multiple domains
 
 # Parse arguments
@@ -501,6 +697,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --server-only)
             SERVER_ONLY=true
+            shift
+            ;;
+        --force)
+            FORCE=true
             shift
             ;;
         --domain)
@@ -639,40 +839,286 @@ check_common_name_length "${DOMAINS[0]}"
 STEP="validate numbers"
 check_key_size "--key-size" "$KEY_SIZE"
 check_days "--days" "$DAYS"
+
+# A client of one of these names would write over the CA or server files.
+RESERVED_NAMES=(ca ca-trusted server localhost)
+check_client_name() {
+    local reserved
+    for reserved in "${RESERVED_NAMES[@]}"; do
+        if [ "$CLIENT_NAME" = "$reserved" ]; then
+            die "client name '$CLIENT_NAME' would overwrite the CA or server files; the names ${RESERVED_NAMES[*]} are reserved"
+        fi
+    done
+}
+if [ "$SERVER_ONLY" = false ]; then
+    STEP="validate client name"
+    check_client_name
+fi
+
+SERVER_CERT_NAME="server"
+if [ ${#DOMAINS[@]} -eq 1 ] && [ "${DOMAINS[0]}" = "localhost" ]; then
+    SERVER_CERT_NAME="localhost"
+fi
+
 STEP="prepare output folder"
 prepare_certs_dir
 
-# Generate CA only if it doesn't exist
-CA_REUSED=false
-if [ ! -f "$CERTS_DIR/ca.key" ] || [ ! -f "$CERTS_DIR/ca.crt" ]; then
+# A key that others can read or change is already exposed, and signing with it
+# would keep relying on it.
+check_key_private() {
+    local f="$1"
+    path_info "$f" || die "cannot read the permissions of $f"
+    if [ "${PI_MODE:4:6}" != "------" ]; then
+        die "$f can be read or changed by other users (mode ${PI_MODE:1:9}); run chmod 600 on it before this script reuses it"
+    fi
+}
+
+# A server key and certificate that do not belong together would be reused
+# silently and fail later in the TLS handshake.
+check_server_pair() {
+    local crt="$CERTS_DIR/${SERVER_CERT_NAME}.crt" key="$CERTS_DIR/${SERVER_CERT_NAME}.key"
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt" -noout -pubkey) || die "cannot read the certificate $crt"
+    key_pub=$(openssl pkey -in "$key" -passin pass: -pubout) || die "cannot read the key $key"
+    if [ "$crt_pub" != "$key_pub" ]; then
+        die "$crt and $key do not belong together (the key does not match the certificate); restore the matching pair, or use --force to make a new one"
+    fi
+}
+
+# SERVER_NAMES: the DNS names and addresses in an existing certificate.
+read_server_names() {
+    local san line item
+    local -a items
+    SERVER_NAMES=()
+    # openssl exits non-zero for a certificate with no subjectAltName; that
+    # certificate has no names, which the caller reports as a mismatch.
+    san=$(openssl x509 -in "$1" -noout -ext subjectAltName) || san=""
+    while IFS= read -r line; do
+        [[ "$line" == [[:space:]]* ]] || continue
+        IFS=, read -ra items <<< "$line"
+        for item in "${items[@]}"; do
+            item=$(trim "$item")
+            item="${item#DNS:}"
+            SERVER_NAMES+=("${item#IP Address:}")
+        done
+    done <<< "$san"
+}
+
+# True when the existing certificate holds exactly the requested names. An
+# address is compared by openssl, so 0:0::1 and ::1 count as the same.
+server_names_match() {
+    local crt="$CERTS_DIR/${SERVER_CERT_NAME}.crt" d n found
+    [ ${#SERVER_NAMES[@]} -eq ${#DOMAINS[@]} ] || return 1
+    for d in "${DOMAINS[@]}"; do
+        if is_ip_name "$d"; then
+            openssl x509 -in "$crt" -noout -checkip "$d" > /dev/null || return 1
+        else
+            found=false
+            for n in "${SERVER_NAMES[@]}"; do
+                if [ "$n" = "$d" ]; then found=true; fi
+            done
+            [ "$found" = true ] || return 1
+        fi
+    done
+}
+
+# Decides, before any key is made, which files this run writes, and refuses
+# when that would destroy or trust something it did not just make.
+# CA_NEW: make a CA. SERVER_NEW: make the server certificate. WRITE: the files
+# this run adds to the folder (ca.srl is a counter and is replaced as it grows).
+# SERVER_SHOWN: the names the server certificate really holds, for the summary.
+plan_outputs() {
+    local f name has_key=false has_crt=false conflict=false
+    CA_NEW=false
+    SERVER_NEW=true
+    WRITE=()
+    if [ -e "$CERTS_DIR/ca.key" ]; then has_key=true; fi
+    if [ -e "$CERTS_DIR/ca.crt" ]; then has_crt=true; fi
+    if [ "$has_key" != "$has_crt" ]; then
+        die "$CERTS_DIR has only one of ca.key and ca.crt, so the CA cannot be used or rebuilt; restore the missing file or empty the folder (--force does not apply)"
+    fi
+    if [ "$has_key" = true ]; then
+        check_key_private "$CERTS_DIR/ca.key"
+    fi
+    if [ "$has_key" = false ]; then
+        CA_NEW=true
+        for f in "${FOLDER_ENTRIES[@]+"${FOLDER_ENTRIES[@]}"}"; do
+            if [[ "$f" == *.crt ]]; then
+                die "$CERTS_DIR has the certificate ${f##*/} but no CA, so new certificates would not match it; restore the CA or empty the folder (--force does not apply)"
+            fi
+        done
+        WRITE+=(ca.key ca.crt ca.srl ca-trusted.crt)
+    elif ! cmp -s "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca-trusted.crt" 2>/dev/null; then
+        # cmp also fails when ca-trusted.crt is absent, which is the case to write it.
+        WRITE+=(ca-trusted.crt)
+    fi
+    if [ "$FORCE" = false ]; then
+        if [ -e "$CERTS_DIR/${SERVER_CERT_NAME}.crt" ] && [ -e "$CERTS_DIR/${SERVER_CERT_NAME}.key" ]; then
+            SERVER_NEW=false
+        elif [ -e "$CERTS_DIR/${SERVER_CERT_NAME}.crt" ] || [ -e "$CERTS_DIR/${SERVER_CERT_NAME}.key" ]; then
+            die "$CERTS_DIR has only one of ${SERVER_CERT_NAME}.crt and ${SERVER_CERT_NAME}.key; use --force to replace both"
+        fi
+    fi
+    if [ "$SERVER_NEW" = true ]; then
+        WRITE+=("${SERVER_CERT_NAME}.key" "${SERVER_CERT_NAME}.crt")
+    fi
+    if [ "$SERVER_ONLY" = false ]; then
+        WRITE+=("${CLIENT_NAME}.key" "${CLIENT_NAME}.crt" "${CLIENT_NAME}.p12")
+    fi
+    if [ "$FORCE" = false ]; then
+        for name in "${WRITE[@]}"; do
+            if [ -e "$CERTS_DIR/$name" ]; then
+                echo "Error: $CERTS_DIR/$name already exists; choose another name or use --force to replace it" >&2
+                conflict=true
+            fi
+        done
+        if [ "$conflict" = true ]; then
+            exit 1
+        fi
+    fi
+    SERVER_SHOWN=("${DOMAINS[@]}")
+    if [ "$SERVER_NEW" = false ]; then
+        check_key_private "$CERTS_DIR/${SERVER_CERT_NAME}.key"
+        check_server_pair
+        read_server_names "$CERTS_DIR/${SERVER_CERT_NAME}.crt"
+        SERVER_SHOWN=("${SERVER_NAMES[@]+"${SERVER_NAMES[@]}"}")
+        if [ ${#SERVER_SHOWN[@]} -eq 0 ]; then SERVER_SHOWN=("(no names)"); fi
+        if ! server_names_match; then
+            if [ "$SERVER_ONLY" = true ]; then
+                die "$CERTS_DIR/${SERVER_CERT_NAME}.crt already exists for the names ${SERVER_SHOWN[*]}, not the requested ${DOMAINS[*]}, so --server-only would make nothing; use --force to replace it"
+            fi
+            echo "Warning: the existing server certificate $CERTS_DIR/${SERVER_CERT_NAME}.crt is for the names ${SERVER_SHOWN[*]}, not the requested ${DOMAINS[*]}; it is reused as it is (use --force to make one for these names)" >&2
+        fi
+    fi
+}
+STEP="check existing files"
+plan_outputs
+
+STEP="create staging folder"
+STAGE=$(mktemp -d "$CERTS_DIR/.staging.XXXXXX") || die "cannot make a staging folder in $CERTS_DIR"
+
+# A hard link keeps the old file without copying key material. Where the
+# filesystem refuses links, a copy that keeps mode and owner, inside the
+# owner-only staging folder, does the same job; refusing instead would make
+# every run after the first fail, because ca.srl is always replaced.
+keep_old() {
+    # ln fails when hard links are not supported; the cp below is the fallback.
+    ln -- "$1" "$2" 2> /dev/null || cp -p -- "$1" "$2" || die "cannot keep a copy of $1, so it was not replaced"
+}
+
+# Moves one staged file into the output folder, or dies. Without --force, a
+# file that appeared since the check is not replaced. A replaced file is kept
+# first in $STAGE/.old, so rollback_commit can restore it and the name never
+# goes missing. The destination is checked on both sides of the move because
+# mv would put the file inside a folder, or a link to one, that appeared there.
+# MOVING is set before the mv so a signal that lands during it is rolled back.
+place_file() {
+    local src="$1" name dest replace=false
+    name=$(basename -- "$src")
+    dest="$CERTS_DIR/$name"
+    if [ "$FORCE" = true ] || [ "$name" = "ca.srl" ]; then replace=true; fi
+    if [ -L "$dest" ] || [ -d "$dest" ]; then
+        die "$dest is a link or a folder that appeared while this run was working; nothing was moved into it"
+    fi
+    if [ -e "$dest" ]; then
+        if [ "$replace" = false ]; then
+            die "$dest appeared while this run was working; it was not replaced"
+        fi
+        keep_old "$dest" "$STAGE/.old/$name"
+        BACKED+=("$name")
+    fi
+    MOVING="$name"
+    if [ "$replace" = true ]; then
+        mv -f -- "$src" "$dest" || die "cannot move $name into $CERTS_DIR"
+    else
+        mv -n -- "$src" "$dest" || die "cannot move $name into $CERTS_DIR"
+    fi
+    if [ -e "$src" ]; then
+        die "$dest appeared while this run was working; it was not replaced"
+    fi
+    if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+        if [ -d "$dest" ]; then
+            rm -f -- "${dest:?}/$name"
+        fi
+        # A file that was new left nothing behind to undo; an old one still
+        # has its copy to restore.
+        if ! in_list "$name" "${BACKED[@]+"${BACKED[@]}"}"; then
+            MOVING=""
+        fi
+        die "$dest is not a regular file after the move; a link or a folder appeared there while this run was working"
+    fi
+    PLACED+=("$name")
+    MOVING=""
+}
+
+# The marker goes first, so a folder this script made, and cut off before the
+# move finished, is still one it will accept again.
+commit_staged() {
+    local f staged
+    STEP="move files into the output folder"
+    mkdir -- "$STAGE/.old" || die "cannot make a folder for the old files in $STAGE"
+    COMMITTING=true
+    if [ ! -e "$CERTS_DIR/$MARKER" ]; then
+        printf 'Made by generate-certs.sh. Holds development keys; keep it private.\n' > "$STAGE/$MARKER"
+        place_file "$STAGE/$MARKER"
+    fi
+    shopt -s nullglob
+    staged=("$STAGE"/*)
+    shopt -u nullglob
+    for f in "${staged[@]+"${staged[@]}"}"; do
+        place_file "$f"
+    done
+    COMMITTING=false
+}
+
+# Keys private, certificates and bundles readable, whatever the umask.
+set_stage_modes() {
+    local -a keys crts
+    STEP="set file permissions"
+    shopt -s nullglob
+    keys=("$STAGE"/*.key)
+    crts=("$STAGE"/*.crt "$STAGE"/*.p12)
+    shopt -u nullglob
+    if [ ${#keys[@]} -gt 0 ]; then chmod 600 "${keys[@]}"; fi
+    if [ ${#crts[@]} -gt 0 ]; then chmod 644 "${crts[@]}"; fi
+}
+
+CA_KEY="$CERTS_DIR/ca.key"
+CA_CRT="$CERTS_DIR/ca.crt"
+if [ "$CA_NEW" = true ]; then
+    CA_KEY="$STAGE/ca.key"
+    CA_CRT="$STAGE/ca.crt"
     STEP="print progress"
     echo "Generating new CA certificate..."
 
     STEP="generate CA key"
-    openssl genrsa -out "$CERTS_DIR/ca.key" "$KEY_SIZE"
+    openssl genrsa -out "$CA_KEY" "$KEY_SIZE"
 
     STEP="generate CA certificate"
-    openssl req -new -x509 -days "$DAYS" -key "$CERTS_DIR/ca.key" -out "$CERTS_DIR/ca.crt" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CA_NAME"
+    openssl req -new -x509 -days "$DAYS" -key "$CA_KEY" -out "$CA_CRT" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CA_NAME"
 
     STEP="print progress"
     echo "CA certificate generated successfully!"
 else
     STEP="print progress"
     echo "Using existing CA certificate..."
-    CA_REUSED=true
+    if [ -e "$CERTS_DIR/ca.srl" ]; then
+        STEP="stage CA serial file"
+        cp -- "$CERTS_DIR/ca.srl" "$STAGE/ca.srl"
+    fi
 fi
 
 # The CA subject printed below is read back from ca.crt: an existing CA is
 # kept as it is, so the requested values may not be the ones in use.
 STEP="read CA subject"
 CA_SUBJECT_OPTS="sep_comma_plus_space,dn_rev,sname,utf8"
-CA_SUBJECT=$(openssl x509 -in "$CERTS_DIR/ca.crt" -noout -subject -nameopt "$CA_SUBJECT_OPTS") || {
+CA_SUBJECT=$(openssl x509 -in "$CA_CRT" -noout -subject -nameopt "$CA_SUBJECT_OPTS") || {
     echo "Error: cannot read the subject of $CERTS_DIR/ca.crt" >&2
     exit 1
 }
 CA_SUBJECT="${CA_SUBJECT#subject=}"
 CA_REQUESTED="CN=$CA_NAME, O=$ORG, L=$CITY, ST=$STATE, C=$COUNTRY"
-if [ "$CA_REUSED" = true ] && [ "$CA_SUBJECT" != "$CA_REQUESTED" ]; then
+if [ "$CA_NEW" = false ] && [ "$CA_SUBJECT" != "$CA_REQUESTED" ]; then
     echo "Warning: the existing CA at $CERTS_DIR/ca.crt has subject '$CA_SUBJECT', not the requested '$CA_REQUESTED'; the existing CA is kept" >&2
 fi
 
@@ -680,21 +1126,16 @@ fi
 generate_server_certificate() {
     local domains=("$@")
     local primary_domain="${domains[0]}"
-    local cert_name="server"
-
-    # If only localhost, use localhost as filename for backward compatibility
-    if [ ${#domains[@]} -eq 1 ] && [ "${domains[0]}" = "localhost" ]; then
-        cert_name="localhost"
-    fi
+    local cert_name="$SERVER_CERT_NAME"
 
     STEP="print progress"
     echo "Generating server certificate for domains: ${domains[*]}"
 
     STEP="generate server key"
-    openssl genrsa -out "$CERTS_DIR/${cert_name}.key" "$KEY_SIZE"
+    openssl genrsa -out "$STAGE/${cert_name}.key" "$KEY_SIZE"
 
     STEP="write server certificate config"
-    local config_file="$CERTS_DIR/${cert_name}.conf"
+    local config_file="$STAGE/${cert_name}.conf"
     cat > "$config_file" << EOF
 [req]
 distinguished_name = req_distinguished_name
@@ -730,13 +1171,13 @@ EOF
     done
 
     STEP="generate server certificate request"
-    openssl req -new -key "$CERTS_DIR/${cert_name}.key" -out "$CERTS_DIR/${cert_name}.csr" -config "$config_file"
+    openssl req -new -key "$STAGE/${cert_name}.key" -out "$STAGE/${cert_name}.csr" -config "$config_file"
 
     STEP="sign server certificate"
-    openssl x509 -req -days "$DAYS" -in "$CERTS_DIR/${cert_name}.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial -out "$CERTS_DIR/${cert_name}.crt" -extensions v3_req -extfile "$config_file"
+    openssl x509 -req -days "$DAYS" -in "$STAGE/${cert_name}.csr" -CA "$CA_CRT" -CAkey "$CA_KEY" -CAserial "$STAGE/ca.srl" -CAcreateserial -out "$STAGE/${cert_name}.crt" -extensions v3_req -extfile "$config_file"
 
     STEP="remove server temporary files"
-    rm "$CERTS_DIR/${cert_name}.csr" "$config_file"
+    rm -- "${STAGE:?}/${cert_name}.csr" "${config_file:?}"
 
     STEP="print summary"
     echo "Server certificate generated successfully!"
@@ -745,30 +1186,22 @@ EOF
     echo "  Domains: ${domains[*]}"
 }
 
-# Copy CA certificate to Caddy trusted path (will be mounted in Docker)
 STEP="copy CA certificate to ca-trusted.crt"
-cp "$CERTS_DIR/ca.crt" "$CERTS_DIR/ca-trusted.crt"
-
-# Generate server certificate with specified domains
-# Check if we need to regenerate based on domains or if files don't exist
-SERVER_CERT_NAME="server"
-if [ ${#DOMAINS[@]} -eq 1 ] && [ "${DOMAINS[0]}" = "localhost" ]; then
-    SERVER_CERT_NAME="localhost"
+if [[ " ${WRITE[*]} " == *" ca-trusted.crt "* ]]; then
+    cp "$CA_CRT" "$STAGE/ca-trusted.crt"
 fi
 
-# Always regenerate server certificate if domains are specified or if it doesn't exist
-if [ ${#DOMAINS[@]} -gt 0 ] && ([ ! -f "$CERTS_DIR/${SERVER_CERT_NAME}.crt" ] || [ ! -f "$CERTS_DIR/${SERVER_CERT_NAME}.key" ]); then
+if [ "$SERVER_NEW" = true ]; then
     generate_server_certificate "${DOMAINS[@]}"
-elif [ ${#DOMAINS[@]} -gt 1 ] || ([ ${#DOMAINS[@]} -eq 1 ] && [ "${DOMAINS[0]}" != "localhost" ]); then
-    # Regenerate if we have multiple domains or a domain other than localhost
-    generate_server_certificate "${DOMAINS[@]}"
-elif [ ! -f "$CERTS_DIR/localhost.crt" ] || [ ! -f "$CERTS_DIR/localhost.key" ]; then
-    # Fallback to localhost if no domains specified and localhost cert doesn't exist
-    generate_server_certificate "localhost"
+else
+    STEP="print progress"
+    echo "Using existing server certificate ${SERVER_CERT_NAME}.crt (use --force to make one for these domains)"
 fi
 
 # If server-only mode, exit here without generating client certificate
 if [ "$SERVER_ONLY" = true ]; then
+    set_stage_modes
+    commit_staged
     STEP="print summary"
     echo ""
     echo "Server certificate generation completed!"
@@ -782,34 +1215,33 @@ if [ "$SERVER_ONLY" = true ]; then
     echo "  City: $CITY"
     echo "  Organization: $ORG"
     echo "  CA subject: $CA_SUBJECT"
-    echo "  Domains: ${DOMAINS[*]}"
+    echo "  Domains: ${SERVER_SHOWN[*]}"
     echo "  Valid for: $DAYS days"
     echo "  Key size: $KEY_SIZE bits"
     echo "  Output directory: $CERTS_DIR"
     echo ""
     echo "Test server certificate:"
-    echo "  curl --cacert $CERTS_DIR/ca.crt https://${DOMAINS[0]}/"
+    echo "  curl --cacert $CERTS_DIR/ca.crt https://${SERVER_SHOWN[0]}/"
     exit 0
 fi
 
 STEP="generate client key"
-openssl genrsa -out "$CERTS_DIR/${CLIENT_NAME}.key" "$KEY_SIZE"
+openssl genrsa -out "$STAGE/${CLIENT_NAME}.key" "$KEY_SIZE"
 
 STEP="generate client certificate request"
-openssl req -new -key "$CERTS_DIR/${CLIENT_NAME}.key" -out "$CERTS_DIR/${CLIENT_NAME}.csr" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CLIENT_NAME"
+openssl req -new -key "$STAGE/${CLIENT_NAME}.key" -out "$STAGE/${CLIENT_NAME}.csr" -subj "/C=$COUNTRY/ST=$STATE/L=$CITY/O=$ORG/CN=$CLIENT_NAME"
 
 STEP="sign client certificate"
-openssl x509 -req -days "$DAYS" -in "$CERTS_DIR/${CLIENT_NAME}.csr" -CA "$CERTS_DIR/ca.crt" -CAkey "$CERTS_DIR/ca.key" -CAcreateserial -out "$CERTS_DIR/${CLIENT_NAME}.crt"
+openssl x509 -req -days "$DAYS" -in "$STAGE/${CLIENT_NAME}.csr" -CA "$CA_CRT" -CAkey "$CA_KEY" -CAserial "$STAGE/ca.srl" -CAcreateserial -out "$STAGE/${CLIENT_NAME}.crt"
 
 STEP="export client PKCS#12 bundle"
-openssl pkcs12 -export -out "$CERTS_DIR/${CLIENT_NAME}.p12" -inkey "$CERTS_DIR/${CLIENT_NAME}.key" -in "$CERTS_DIR/${CLIENT_NAME}.crt" -certfile "$CERTS_DIR/ca.crt" -password pass:changeme
+openssl pkcs12 -export -out "$STAGE/${CLIENT_NAME}.p12" -inkey "$STAGE/${CLIENT_NAME}.key" -in "$STAGE/${CLIENT_NAME}.crt" -certfile "$CA_CRT" -password pass:changeme
 
 STEP="remove client request file"
-rm "$CERTS_DIR/${CLIENT_NAME}.csr"
+rm -- "${STAGE:?}/${CLIENT_NAME:?}.csr"
 
-STEP="set file permissions"
-chmod 600 "$CERTS_DIR"/*.key
-chmod 644 "$CERTS_DIR"/*.crt "$CERTS_DIR"/*.p12
+set_stage_modes
+commit_staged
 
 STEP="print summary"
 echo "Client certificate generated successfully!"
@@ -827,10 +1259,10 @@ echo "  City: $CITY"
 echo "  Organization: $ORG"
 echo "  CA subject: $CA_SUBJECT"
 echo "  Client Name: $CLIENT_NAME"
-echo "  Server Domains: ${DOMAINS[*]}"
+echo "  Server Domains: ${SERVER_SHOWN[*]}"
 echo "  Valid for: $DAYS days"
 echo "  Key size: $KEY_SIZE bits"
 echo "  Output directory: $CERTS_DIR"
 echo ""
 echo "Test with curl:"
-echo "  curl --cacert $CERTS_DIR/ca.crt --cert $CERTS_DIR/${CLIENT_NAME}.crt --key $CERTS_DIR/${CLIENT_NAME}.key https://${DOMAINS[0]}/"
+echo "  curl --cacert $CERTS_DIR/ca.crt --cert $CERTS_DIR/${CLIENT_NAME}.crt --key $CERTS_DIR/${CLIENT_NAME}.key https://${SERVER_SHOWN[0]}/"
