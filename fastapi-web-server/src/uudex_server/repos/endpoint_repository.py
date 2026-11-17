@@ -39,6 +39,12 @@ class EndpointRepository(Repository[EndPoint]):
         result = await self.session.execute(statement)
         return bool(result.scalar())
 
+    async def certificate_dn_exists(self, certificate_dn: str) -> bool:
+        """True when any endpoint, active or not, already has this certificate DN."""
+        statement = select(exists().where(EndPoint.certificate_dn == certificate_dn))
+        result = await self.session.execute(statement)
+        return bool(result.scalar())
+
     async def create_endpoint(self, endpoint: EndPoint) -> EndPoint:
         self.session.add(endpoint)
         await self.session.commit()

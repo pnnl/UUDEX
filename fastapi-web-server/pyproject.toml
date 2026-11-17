@@ -29,6 +29,9 @@ pytz = "^2024.2"
 databases = {extras = ["postgresql"], version = "^0.9.0"}
 
 
+[tool.poetry.scripts]
+uudex-server = "uudex_server.cli:main"
+
 [tool.poetry.group.dev.dependencies]
 pre-commit = "^3.5.0"
 pytest = "^9.0.3"
