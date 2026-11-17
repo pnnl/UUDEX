@@ -47,6 +47,11 @@ APP_NET=""
 PROXY_IP=""
 PORTS=""
 STATIC_SRC=""
+SERVER_IP=""
+PINNED=""
+CA_REAL=""
+CRT_REAL=""
+KEY_REAL=""
 DYNAMIC_SRC=""
 GIT_PREFIX=""
 THROWAWAY_IMAGE=""
@@ -106,7 +111,7 @@ preflight() {
   done
   GIT_PREFIX=$(git -C "$APP_DIR" rev-parse --show-prefix) || die "$APP_DIR is not inside a git checkout"
   git -C "$APP_DIR" rev-parse --verify --quiet HEAD >/dev/null || die "the checkout has no HEAD commit"
-  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
+  [ -n "$TMP" ] || die "internal error: no temporary folder"
   dk info >/dev/null 2>&1 || die "the docker daemon does not answer"
   PROXY=$(service_container proxy)
   # All published ports, for example "8443/tcp -> 127.0.0.1:8443".
@@ -126,6 +131,22 @@ preflight() {
   THROWAWAY_IMAGE=$(dk inspect --format '{{.Config.Image}}' "$(service_container db)") \
     || die "cannot read the db image"
   case "$THROWAWAY_IMAGE" in *@sha256:*) ;; *) die "the db image is not pinned by digest" ;; esac
+  # Everything a check needs from outside the running stack is read here, so that once the
+  # checks start a problem is a failed check and never an early exit that skips the rest.
+  SERVER_IP=$(dk inspect --format "{{(index .NetworkSettings.Networks \"$APP_NET\").IPAddress}}" \
+    "$(service_container server)") || die "cannot read the server address on $APP_NET"
+  [ -n "$SERVER_IP" ] || die "the server has no address on $APP_NET"
+  for c in traefik.yml dynamic.yml; do
+    git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}traefik/$c" >"$TMP/head-$c" \
+      || die "traefik/$c is not committed at HEAD"
+  done
+  PINNED=$(git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}compose.yaml" \
+    | /usr/bin/grep -oE 'traefik:[^ ]+@sha256:[0-9a-f]{64}' | sort -u) || die "no pinned traefik image in compose.yaml at HEAD"
+  [ -n "$PINNED" ] && [ "$(printf '%s\n' "$PINNED" | wc -l)" -eq 1 ] \
+    || die "compose.yaml at HEAD must pin exactly one traefik image"
+  CA_REAL=$(realpath -e -- "$CERTS/ca.crt") || die "cannot resolve $CERTS/ca.crt"
+  CRT_REAL=$(realpath -e -- "$CERTS/localhost.crt") || die "cannot resolve $CERTS/localhost.crt"
+  KEY_REAL=$(realpath -e -- "$CERTS/localhost.key") || die "cannot resolve $CERTS/localhost.key"
 }
 
 # A second CA with a client certificate the real CA never signed.
@@ -254,11 +275,8 @@ run_throwaway() {
 
 # The server must answer 401 to a forged header from anywhere but the proxy's address.
 check_server_direct() {
-  local server_ip forged code out rc=0
+  local server_ip=$SERVER_IP forged code out rc=0
   control_ok || { fail "direct server access gives 401 (control: valid client did not get 200)"; return; }
-  server_ip=$(dk inspect --format "{{(index .NetworkSettings.Networks \"$APP_NET\").IPAddress}}" \
-    "$(service_container server)") || die "cannot read the server address on $APP_NET"
-  [ -n "$server_ip" ] || die "the server has no address on $APP_NET"
   forged=$(der_b64 "$CERTS/$CLIENT.crt")
 
   code=$(curl_t --silent --output /dev/null --max-time "$NET_TIMEOUT" --write-out '%{http_code}' \
@@ -329,12 +347,10 @@ check_committed_config() {
   for name in traefik.yml dynamic.yml; do
     if [ "$name" = traefik.yml ]; then src=$STATIC_SRC; else src=$DYNAMIC_SRC; fi
     msg="mounted $name is identical to the committed file"
-    git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}traefik/$name" >"$TMP/head-$name" \
-      || die "traefik/$name is not committed at HEAD"
     if [ -z "$src" ]; then
       fail "$msg (no mount found for it)"
     elif [ ! -r "$src" ]; then
-      die "mount source $src of $name is not readable on this host"
+      fail "$msg (mount source $src is not readable on this host)"
     elif ! cmp -s "$src" "$TMP/head-$name"; then
       fail "mounted $name differs from the committed file (source $src)"
     elif ! dk exec "$PROXY" cat "/etc/traefik/$name" >"$TMP/run-$name" 2>/dev/null; then
@@ -350,43 +366,39 @@ check_committed_config() {
 # The image the proxy runs is the one compose.yaml pins, and it starts with the image's own
 # entrypoint, command and environment: nothing swaps the program or feeds it settings.
 check_image_and_launch() {
-  local pinned n have image_id want got field
-  pinned=$(git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}compose.yaml" \
-    | /usr/bin/grep -oE 'traefik:[^ ]+@sha256:[0-9a-f]{64}' | sort -u) || die "no pinned traefik image in compose.yaml at HEAD"
-  n=$(printf '%s\n' "$pinned" | wc -l)
-  [ -n "$pinned" ] && [ "$n" -eq 1 ] || die "compose.yaml at HEAD must pin exactly one traefik image"
-  have=$(dk inspect --format '{{.Config.Image}}' "$PROXY") || die "cannot read the proxy image"
-  if [ "$have" != "$pinned" ]; then
-    fail "proxy runs the pinned image (running $have, committed $pinned)"
+  local msg="proxy runs the pinned image" have image_id want got field
+  have=$(dk inspect --format '{{.Config.Image}}' "$PROXY") || have=""
+  image_id=$(dk inspect --format '{{.Image}}' "$PROXY") || image_id=""
+  want=$(dk image inspect --format '{{.Id}}' "$PINNED") || want=""
+  if [ "$have" != "$PINNED" ]; then
+    fail "$msg (running ${have:-unreadable}, committed $PINNED)"
+  elif [ -n "$image_id" ] && [ "$image_id" = "$want" ]; then
+    pass "$msg"
   else
-    image_id=$(dk inspect --format '{{.Image}}' "$PROXY") || die "cannot read the proxy image id"
-    want=$(dk image inspect --format '{{.Id}}' "$pinned") || die "the pinned image is not present locally"
-    if [ -n "$image_id" ] && [ "$image_id" = "$want" ]; then
-      pass "proxy runs the pinned image"
-    else
-      fail "proxy runs the pinned image (image id ${image_id:-empty} differs from $want)"
-    fi
+    fail "$msg (image id ${image_id:-unreadable} differs from ${want:-unreadable})"
   fi
-  image_id=$(dk inspect --format '{{.Image}}' "$PROXY") || die "cannot read the proxy image id"
-  [ -n "$image_id" ] || die "the proxy has no image id"
   for field in Entrypoint Env; do
-    got=$(dk inspect --format "{{json .Config.$field}}" "$PROXY") || die "cannot read the proxy $field"
-    want=$(dk image inspect --format "{{json .Config.$field}}" "$image_id") || die "cannot read the image $field"
-    case "$got" in '' | null | '[]') die "the proxy $field is empty; cannot compare it" ;; esac
+    msg="proxy $field equals the image's own"
+    got=$(dk inspect --format "{{json .Config.$field}}" "$PROXY") || got=""
+    want=""
+    [ -z "$image_id" ] || want=$(dk image inspect --format "{{json .Config.$field}}" "$image_id") || want=""
+    case "$got" in
+      '' | null | '[]') fail "$msg (the proxy $field is empty or unreadable; cannot compare it)"; continue ;;
+    esac
     if [ "$got" = "$want" ]; then
-      pass "proxy $field equals the image's own"
+      pass "$msg"
     else
-      fail "proxy $field equals the image's own (running $got, image $want)"
+      fail "$msg (running $got, image ${want:-unreadable})"
     fi
   done
-  got=$(dk inspect --format '{{json .Config.Cmd}}' "$PROXY") || die "cannot read the proxy Cmd"
+  got=$(dk inspect --format '{{json .Config.Cmd}}' "$PROXY") || got=""
   if [ "$got" = '["traefik"]' ]; then
     pass "proxy command is [traefik]"
   else
-    fail "proxy command is [traefik] (running ${got:-empty})"
+    fail "proxy command is [traefik] (running ${got:-unreadable})"
   fi
-  got=$(dk inspect --format '{{json .HostConfig.Tmpfs}}' "$PROXY") || die "cannot read the proxy Tmpfs"
-  case "$got" in null | '{}') pass "proxy has no tmpfs" ;; *) fail "proxy has no tmpfs (found $got)" ;; esac
+  got=$(dk inspect --format '{{json .HostConfig.Tmpfs}}' "$PROXY") || got=""
+  case "$got" in null | '{}') pass "proxy has no tmpfs" ;; *) fail "proxy has no tmpfs (found ${got:-unreadable})" ;; esac
 }
 
 # The proxy's mounts must be exactly: three single certificate files and the two config
@@ -395,9 +407,9 @@ check_image_and_launch() {
 # as CONFIG so their path does not matter.
 check_mounts() {
   local msg="proxy mounts are exactly the three certificate files and two config files, read-only"
-  local mounts actual expected type src dst rw extra missing ca crt key
+  local mounts actual expected type src dst rw extra missing
   mounts=$(dk inspect --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{"\n"}}{{end}}' "$PROXY") \
-    || die "cannot read the proxy mounts"
+    || { fail "$msg (cannot read the proxy mounts)"; return; }
   actual=""
   while IFS='|' read -r type src dst rw; do
     [ -n "$type" ] || continue
@@ -411,13 +423,10 @@ check_mounts() {
     actual+="$type|$src|$dst|$rw"$'\n'
   done <<<"$mounts"
   actual=$(printf '%s' "$actual" | LC_ALL=C sort)
-  ca=$(realpath -e -- "$CERTS/ca.crt") || die "cannot resolve $CERTS/ca.crt"
-  crt=$(realpath -e -- "$CERTS/localhost.crt") || die "cannot resolve $CERTS/localhost.crt"
-  key=$(realpath -e -- "$CERTS/localhost.key") || die "cannot resolve $CERTS/localhost.key"
   expected=$(printf '%s\n' \
-    "bind|$ca|/certs/ca.crt|false" \
-    "bind|$crt|/certs/server.crt|false" \
-    "bind|$key|/certs/server.key|false" \
+    "bind|$CA_REAL|/certs/ca.crt|false" \
+    "bind|$CRT_REAL|/certs/server.crt|false" \
+    "bind|$KEY_REAL|/certs/server.key|false" \
     "bind|CONFIG|/etc/traefik/traefik.yml|false" \
     "bind|CONFIG|/etc/traefik/dynamic.yml|false" \
     | LC_ALL=C sort)
@@ -431,6 +440,7 @@ check_mounts() {
 }
 
 main() {
+  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
   preflight
   make_rogue || die "cannot make the second CA and its client certificate with openssl"
   check_valid_client
