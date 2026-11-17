@@ -1655,6 +1655,30 @@ same_pair() {
     done
 }
 
+@test "a folder without the marker is refused with a message that it may come from an older version and how to adopt it; the marker makes it work" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    rm -- "${d:?}/.uudex-certs"
+    assert_refusal_changes_nothing "$d" "has no .uudex-certs marker" bob
+    [[ "$output" == *"older version"*"create an empty file named .uudex-certs"* ]] || { echo "$output"; return 1; }
+    : > "$d/.uudex-certs"
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+    run openssl verify -CAfile "$d/ca.crt" "$d/bob.crt"
+    [ "$status" -eq 0 ]
+}
+
+@test "a staging folder left by a cut-off run is named as such, left in place, and the run is refused" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    mkdir -m 700 "$d/.staging.abc123"
+    assert_refusal_changes_nothing "$d" "$d/.staging.abc123 is a staging folder left by a run of this script" bob
+    [[ "$output" == *"delete it with rm -r"* ]]
+    [ -d "$d/.staging.abc123" ]
+}
+
 @test "client names: ca, ca-trusted, server and localhost are refused before the folder is made; a similar name is fine" {
     cd "$WORKDIR"
     local n

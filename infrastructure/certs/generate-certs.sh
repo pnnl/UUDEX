@@ -154,8 +154,10 @@ resolve_physical_dir() {
     fi
 }
 
-# Every entry already in the folder must be a regular file of yours; a folder
-# that has files but no marker was not made by this script.
+# Every entry already in the folder must be a regular file of yours. A
+# .staging.* folder is the one other entry this script makes itself; it is not
+# removed here because a run still going in the same folder looks the same.
+# A folder that has files but no marker was not made by this version.
 check_folder_contents() {
     local entry
     shopt -s nullglob dotglob
@@ -165,6 +167,9 @@ check_folder_contents() {
         if [ -L "$entry" ]; then
             die "$entry is a symbolic link; remove it or choose another output folder"
         fi
+        if [ -d "$entry" ] && [[ "${entry##*/}" == .staging.* ]]; then
+            die "$entry is a staging folder left by a run of this script that was cut off, or a run still going; if none is going, check that the keys and certificates in $CERTS_DIR are a matching set (the staging folder may hold copies of files that a cut-off --force run replaced), then delete it with rm -r"
+        fi
         if [ ! -f "$entry" ]; then
             die "$entry is not a regular file; remove it or choose another output folder"
         fi
@@ -173,7 +178,7 @@ check_folder_contents() {
         fi
     done
     if [ ${#FOLDER_ENTRIES[@]} -gt 0 ] && [ ! -e "$CERTS_DIR/$MARKER" ]; then
-        die "output folder $CERTS_DIR is not empty and has no $MARKER marker, so this script did not make it; use an empty folder"
+        die "output folder $CERTS_DIR is not empty and has no $MARKER marker, so this version of the script did not make it. An older version, or generate-certs-from-existing-postgres.sh, may have: if it holds your CA and certificates, check them, then create an empty file named $MARKER in it to use it. Do not start a new CA beside them, because the certificates the old CA signed would stop matching. Otherwise use an empty folder"
     fi
 }
 
