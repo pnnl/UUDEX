@@ -1,13 +1,11 @@
-from unittest.mock import AsyncMock, patch
+import uuid
 
 import pytest
 from httpx import AsyncClient
 
 from conftest import identity_headers
+from test_caller import seed_endpoint, seed_participant, seed_subject, trusted_client
 
-XFAIL_18_ADMIN = pytest.mark.xfail(
-    strict=True, reason="#18: is_admin read on None, no authenticated user is produced"
-)
 XFAIL_18_MESSAGE = pytest.mark.xfail(
     strict=True,
     reason="#18: discovery returns a different no-certificate message; fits no listed class",
@@ -30,75 +28,33 @@ async def test_discover_subjects_v1_no_auth(client: AsyncClient):
     assert response.json() == "No certificate detected."
 
 
-@XFAIL_18_ADMIN
 @pytest.mark.asyncio
-async def test_discover_subjects_with_mock_auth(client: AsyncClient):
-    """Test discover subjects endpoint with mocked authentication"""
-    # Mock the certificate validation middleware
-    headers = identity_headers("testuser")
+async def test_discover_subjects_non_admin_sees_only_own_participant(setup_test_env):
+    cn = f"discover-{uuid.uuid4().hex[:8]}"
+    mine, other = await seed_participant(), await seed_participant()
+    await seed_endpoint(mine, cn)
+    mine_id, other_id = await seed_subject(mine), await seed_subject(other)
 
-    # Mock the authentication service and repositories
-    with patch("uudex_server.services.authentication_service.get_request_user") as mock_auth:
-        with patch(
-            "uudex_server.repos.subscription_and_subject_repositories.SubjectRepository"
-        ) as mock_repo:
-            # Setup mock user (non-admin)
-            mock_endpoint = AsyncMock()
-            mock_endpoint.participant_id = 1
-            mock_endpoint.uudex_administrator_sw = "N"
+    async with trusted_client() as c:
+        response = await c.get("/subjects/discover", headers=identity_headers(cn))
 
-            mock_user = AsyncMock()
-            mock_user.endpoint = mock_endpoint
-            mock_user.is_admin.return_value = False
-            mock_auth.return_value = mock_user
-
-            # Setup mock repository
-            mock_repo_instance = AsyncMock()
-            mock_repo.return_value = mock_repo_instance
-
-            # Mock select_all_subjects function
-            with patch(
-                "uudex_server.repos.subscription_and_subject_repositories.select_all_subjects"
-            ) as mock_select:
-                mock_select.return_value = []
-
-                response = await client.get("/subjects/discover", headers=headers)
-
-                # The endpoint should now work but may fail due to session merging
-                # We expect either success (200) or an authentication error (500)
-                assert response.status_code in [200, 401, 500]
+    assert response.status_code == 200
+    assert {s["subject_id"] for s in response.json()} == {mine_id}
+    assert other_id not in {s["subject_id"] for s in response.json()}
 
 
-@XFAIL_18_ADMIN
 @pytest.mark.asyncio
-async def test_discover_subjects_admin_with_mock_auth(client: AsyncClient):
-    """Test discover subjects endpoint with mocked admin authentication"""
-    headers = identity_headers("adminuser")
+async def test_discover_subjects_admin_sees_every_participant(setup_test_env):
+    cn = f"discover-{uuid.uuid4().hex[:8]}"
+    mine, other = await seed_participant(), await seed_participant()
+    await seed_endpoint(mine, cn, admin=True)
+    mine_id, other_id = await seed_subject(mine), await seed_subject(other)
 
-    # Mock the authentication service and repositories for admin user
-    with patch("uudex_server.services.authentication_service.get_request_user") as mock_auth:
-        with patch(
-            "uudex_server.repos.subscription_and_subject_repositories.SubjectRepository"
-        ) as mock_repo:
-            # Setup mock admin user
-            mock_endpoint = AsyncMock()
-            mock_endpoint.participant_id = 1
-            mock_endpoint.uudex_administrator_sw = "Y"
+    async with trusted_client() as c:
+        response = await c.get("/subjects/discover", headers=identity_headers(cn))
 
-            mock_user = AsyncMock()
-            mock_user.endpoint = mock_endpoint
-            mock_user.is_admin.return_value = True
-            mock_auth.return_value = mock_user
-
-            # Setup mock repository
-            mock_repo_instance = AsyncMock()
-            mock_repo_instance.select_all.return_value = []
-            mock_repo.return_value = mock_repo_instance
-
-            response = await client.get("/subjects/discover", headers=headers)
-
-            # Admin should be able to access but may fail due to session/DB issues
-            assert response.status_code in [200, 401, 500]
+    assert response.status_code == 200
+    assert {mine_id, other_id} <= {s["subject_id"] for s in response.json()}
 
 
 @XFAIL_18_MESSAGE
