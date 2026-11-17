@@ -4,7 +4,7 @@ This server implementation uses FastAPI as its basis for data access.
 
 The example secrets, passwords and database role in this directory are for local development only. They are not for real deployment.
 
-**Warning:** the server takes client identity from the `X-Client-Cert-*` headers. Run it only behind a proxy that verifies client certificates and overwrites those headers. Do not expose it directly.
+**Warning:** the server takes client identity from the `X-Forwarded-Tls-Client-Cert` header, and believes it only from the peers listed in `TRUSTED_PROXY_HOSTS`. Run it only behind a proxy that verifies client certificates and replaces that header. Do not expose it directly.
 
 See (DEVLIST.md) for features and status of project
 
