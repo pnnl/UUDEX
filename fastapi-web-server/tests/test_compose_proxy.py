@@ -17,9 +17,15 @@ Doc = dict[str, Any]
 PROXY_PORT = "${UUDEX_PROXY_BIND:-127.0.0.1}:8443:8443"
 CERTS_DIR = "${UUDEX_CERTS_DIR:?set in .env.compose}"
 PROXY_CERT_FILES = [f"{CERTS_DIR}/{name}" for name in ("ca.crt", "localhost.crt", "localhost.key")]
-AEAD_ECDHE_SUITE = re.compile(
-    r"^TLS_ECDHE_(RSA|ECDSA)_WITH_(AES_(128|256)_GCM_SHA\d+|CHACHA20_POLY1305_SHA256)$"
-)
+# Spelled out in full: a pattern would also accept names that do not exist.
+TLS12_SUITES = {
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+}
 
 
 def load(relative: str) -> Doc:
@@ -82,8 +88,8 @@ def test_tls_floor_is_1_2_with_ecdhe_aead_suites_only(dynamic):
     assert version >= 12
     if version == 12:
         suites = options["cipherSuites"]
-        assert suites
-        assert all(AEAD_ECDHE_SUITE.match(suite) for suite in suites), suites
+        assert len(suites) == len(set(suites))
+        assert set(suites) == TLS12_SUITES, suites
 
 
 def test_only_the_proxy_publishes_a_port_and_only_on_the_bind_address(compose):
