@@ -28,6 +28,7 @@ TLS12_SUITES = {
 }
 
 
+# Compose is read as plain YAML: only Traefik matches keys case-insensitively.
 def load(relative: str) -> Doc:
     return yaml.safe_load((SERVER_DIR / relative).read_text())
 
@@ -184,13 +185,18 @@ def test_key_names_walks_nested_mappings_and_lists():
     assert key_names(node) == {"a", "b", "c", "d", "e"}
 
 
-def test_traefik_files_are_plain_yaml_with_no_case_duplicates():
+def test_traefik_files_load_without_template_text_or_ambiguous_keys():
     for relative in ("traefik/dynamic.yml", "traefik/traefik.yml"):
         assert load_traefik(relative), relative
 
 
-def test_every_router_carries_only_the_client_cert_middleware(dynamic):
+def test_dynamic_config_has_only_tls_options_and_the_one_client_cert_middleware(dynamic):
     assert set(dynamic) <= {"tls", "http"}, "only TLS options and HTTP routers may exist"
+    # One middleware type only: any other could rewrite the identity header after it is set.
+    assert dynamic["http"]["middlewares"] == {"client-cert": {"passtlsclientcert": {"pem": True}}}
+
+
+def test_every_router_is_tls_only_on_websecure_with_the_client_cert_middleware(dynamic):
     routers = dynamic["http"]["routers"]
     assert routers
     for name, router in routers.items():
@@ -199,8 +205,6 @@ def test_every_router_carries_only_the_client_cert_middleware(dynamic):
         assert router.get("middlewares") == ["client-cert"], name
         assert router.get("entrypoints") == ["websecure"], name
         assert router.get("tls", {}).get("options", "default") == "default", name
-    # One middleware type only: any other could rewrite the identity header after it is set.
-    assert dynamic["http"]["middlewares"] == {"client-cert": {"passtlsclientcert": {"pem": True}}}
 
 
 def test_every_client_must_present_a_certificate_from_the_mounted_ca(dynamic, compose):
