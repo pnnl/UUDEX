@@ -13,6 +13,14 @@ tls:
     # "default" applies to every router, so no SNI mismatch can pick a weaker option.
     default:
       minVersion: VersionTLS12
+      # TLS 1.2 only with ECDHE and an AEAD cipher: no CBC or SHA-1 suites. TLS 1.3 suites are fixed.
+      cipherSuites:
+        - TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+        - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+        - TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256
+        - TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
       sniStrict: true
       clientAuth:
         clientAuthType: RequireAndVerifyClientCert

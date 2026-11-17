@@ -147,7 +147,8 @@ networks:
   app:
     internal: true
     # Fixed so the server can bind to its app address. Addresses .10 (server) and .20 (proxy)
-    # are outside ip_range, so no other container can be given them while the proxy is down.
+    # are outside ip_range, so Docker hands neither to another container; whoever controls
+    # Docker can still start one with --ip 172.29.77.20.
     # To change the subnet, change every place that holds it (see README, "Compose").
     ipam:
       config:
