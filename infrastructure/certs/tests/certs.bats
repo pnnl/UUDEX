@@ -1573,6 +1573,141 @@ same_pair() {
     [ "$(snapshot "$d" | sort)" = "$expected" ]
 }
 
+# A mv that runs the real one and then sends signal $1 to the script when its
+# arguments match $2. Bash runs the trap when the mv returns, so the file is
+# already in place when the rollback starts.
+stub_mv_signal() {
+    local real
+    real=$(command -v mv)
+    MVBIN="$TT/mvbin"
+    mkdir -p "$MVBIN"
+    cat > "$MVBIN/mv" <<STUBEOF
+#!/bin/bash
+if [[ "\$*" =~ $2 ]]; then
+    $real "\$@"
+    kill -s $1 \$PPID
+    exit 0
+fi
+exec $real "\$@"
+STUBEOF
+    chmod +x "$MVBIN/mv"
+}
+
+modes_of() { stat -c '%a %n' "$1"/*; }
+
+# $1 signal, $2 the exit status the script gives for it. The signal lands while
+# a replaced file (forced run) and then a new file (plain run) is being moved.
+# The output and status are read into locals, not through run, so shellcheck
+# does not flag this helper as a subshell reader of $status.
+assert_signal_during_move_rolled_back() {
+    cd "$WORKDIR" || return 1
+    local d="$TT/o" before modes out rc=0
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    modes=$(modes_of "$d")
+    stub_mv_signal "$1" '\.staging\.[[:alnum:]]{6}/localhost\.key '
+    out=$(PATH="$MVBIN:$PATH" timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force 2>&1) || rc=$?
+    [ "$rc" -eq "$2" ] || { echo "status $rc: $out"; return 1; }
+    [[ "$out" == *"put back as they were: localhost.key localhost.crt"* ]] || { echo "$out"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    [ "$(modes_of "$d")" = "$modes" ]
+    same_pair "$d/localhost"
+    same_pair "$d/alice"
+    stub_mv_signal "$1" '\.staging\.[[:alnum:]]{6}/bob\.key '
+    rc=0
+    out=$(PATH="$MVBIN:$PATH" timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" 2>&1) || rc=$?
+    [ "$rc" -eq "$2" ] || { echo "status $rc: $out"; return 1; }
+    [[ "$out" == *"removed because this run made them: bob.key bob.crt"* ]] || { echo "$out"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    [ "$(modes_of "$d")" = "$modes" ]
+    timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" > /dev/null 2>&1
+    same_pair "$d/bob"
+}
+
+@test "all or nothing: INT during a move puts every file back, the file in flight included" {
+    assert_signal_during_move_rolled_back INT 130
+}
+
+@test "all or nothing: TERM during a move puts every file back, the file in flight included" {
+    assert_signal_during_move_rolled_back TERM 143
+}
+
+@test "all or nothing: HUP during a move puts every file back, the file in flight included" {
+    assert_signal_during_move_rolled_back HUP 129
+}
+
+@test "all or nothing: when a file cannot be put back the staging folder and the old files are kept and named, and the run fails" {
+    cd "$WORKDIR"
+    local d="$TT/o" before stage name
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    stub_mv '\.staging\.[[:alnum:]]{6}/localhost\.key|\.old/'
+    PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    stage=$(echo "$d"/.staging.*)
+    [ -d "$stage/.old" ] || { echo "$output"; return 1; }
+    [[ "$output" == *"could not put back or remove: localhost.crt"* ]] || { echo "$output"; return 1; }
+    [[ "$output" == *"the old files are kept in $stage/.old: "*"localhost.crt"* ]] || { echo "$output"; return 1; }
+    for name in alice.crt alice.key alice.p12 ca.srl localhost.crt localhost.key; do
+        [[ $'\n'"$before"$'\n' == *$'\n'"$(sha256sum < "$stage/.old/$name" | cut -c1-64) $name"$'\n'* ]] || { echo "$name in .old is not the old file"; return 1; }
+    done
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"first move the files in $stage/.old back into $d"* ]] || { echo "$output"; return 1; }
+    rm -f -- "${d:?}/localhost.crt" "${d:?}/localhost.key" "${d:?}/alice.crt" "${d:?}/alice.key" "${d:?}/alice.p12" "${d:?}/ca.srl"
+    mv -- "$stage"/.old/* "$d"/
+    rm -r -- "${stage:?}"
+    [ "$(snapshot "$d")" = "$before" ]
+    same_pair "$d/localhost"
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+}
+
+@test "all or nothing: a link or a folder planted where an old file goes back is not followed, the old file stays in the staging folder, and the message says so" {
+    cd "$WORKDIR"
+    local d="$TT/o" kind stage plant
+    for kind in link folder; do
+        rm -rf -- "${d:?}" "${TT:?}/elsewhere"
+        mkdir -p "$TT/elsewhere"
+        make_full_set "$d"
+        if [ "$kind" = link ]; then
+            plant="ln -s '$TT/elsewhere' '$d/localhost.crt'"
+        else
+            plant="mkdir '$d/localhost.crt'"
+        fi
+        stub_mv '\.staging\.[[:alnum:]]{6}/localhost\.key' "rm -f '$d/localhost.crt'; $plant; exit 1"
+        PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+        [ "$status" -ne 0 ]
+        stage=$(echo "$d"/.staging.*)
+        [[ "$output" == *"left alone because a link or a folder is in their place: localhost.crt"* ]] || { echo "$kind: $output"; return 1; }
+        [ -f "$stage/.old/localhost.crt" ]
+        [ -z "$(ls -A "$TT/elsewhere")" ] || { echo "$kind: followed"; return 1; }
+        [ -z "$(ls -A "$d/localhost.crt")" ]
+    done
+}
+
+@test "all or nothing: where hard links are refused, a copy keeps the old files, a forced run works, and a failed move still restores them with their modes" {
+    cd "$WORKDIR"
+    local d="$TT/o" before modes
+    make_full_set "$d"
+    mkdir -p "$TT/nolink"
+    printf '#!/bin/sh\nexit 1\n' > "$TT/nolink/ln"
+    chmod +x "$TT/nolink/ln"
+    PATH="$TT/nolink:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    before=$(snapshot "$d")
+    modes=$(modes_of "$d")
+    stub_mv '\.staging\.[[:alnum:]]{6}/localhost\.key'
+    PATH="$MVBIN:$TT/nolink:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"put back as they were"* ]] || { echo "$output"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    [ "$(modes_of "$d")" = "$modes" ]
+    PATH="$TT/nolink:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    same_pair "$d/alice"
+}
+
 # A reused server pair, key modes and server names are checked.
 
 @test "reused server pair: a key that does not match the certificate is refused, naming both files, and nothing changes" {
@@ -1681,7 +1816,7 @@ same_pair() {
     make_full_set "$d"
     mkdir -m 700 "$d/.staging.abc123"
     assert_refusal_changes_nothing "$d" "$d/.staging.abc123 is a staging folder left by a run of this script" bob
-    [[ "$output" == *"delete it with rm -r"* ]]
+    [[ "$output" == *"first move the files in $d/.staging.abc123/.old back into $d"*"then remove the staging folder with rm -r"* ]] || { echo "$output"; return 1; }
     [ -d "$d/.staging.abc123" ]
 }
 

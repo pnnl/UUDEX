@@ -8,51 +8,99 @@ STEP="starting up"
 trap 'echo "Error: step failed: $STEP (exit status $?)" >&2' ERR
 
 # Everything is built in a staging folder inside the output folder and moved
-# into place at the end. If the move itself fails or is cut off, the files
-# already moved are put back from hard-link copies kept in the staging folder,
-# so the output folder is as it was. Only a kill -9 during the move can leave
-# a mixed set, and then the staging folder is left behind holding the copies.
+# into place at the end. If the move fails or is cut off by INT, TERM or HUP,
+# the files already moved are put back from the copies kept in the staging
+# folder, so the output folder is as it was. Only a kill -9 during the move can
+# leave a mixed set, and then the staging folder is left behind holding the
+# old files.
 STAGE=""
 MARKER=".uudex-certs"
 COMMITTING=false
+KEEP_STAGE=false
+MOVING=""
 PLACED=()
 BACKED=()
 
+in_list() {
+    local want="$1" item
+    shift
+    for item in "$@"; do
+        if [ "$item" = "$want" ]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Undoes a move that did not finish: a file that replaced an old one gets the
 # old one back, a file that was new is removed. Runs once; it must complete
-# before the staging folder, which holds the copies, is deleted.
+# before the staging folder, which holds the copies, is deleted. If any file
+# cannot be undone the staging folder stays, and the message says where.
 rollback_commit() {
-    local i name undone=() stuck=()
+    local i name dest old msg restored=() removed=() stuck=() refused=() kept=()
     [ "$COMMITTING" = true ] || return 0
     COMMITTING=false
+    # A signal during the rollback would run cleanup again and delete the copies.
+    trap '' INT TERM HUP
+    # Bash runs a signal trap only after the running mv returns, so the file
+    # being moved may already be in place without being in PLACED: the staged
+    # source being gone says the move happened.
+    if [ -n "$MOVING" ] && [ ! -e "$STAGE/$MOVING" ] && ! in_list "$MOVING" "${PLACED[@]+"${PLACED[@]}"}"; then
+        PLACED+=("$MOVING")
+    fi
+    MOVING=""
     for ((i = ${#PLACED[@]} - 1; i >= 0; i--)); do
         name="${PLACED[i]}"
-        if [[ " ${BACKED[*]+"${BACKED[*]}"} " == *" $name "* ]]; then
-            if mv -f -- "$STAGE/.old/$name" "$CERTS_DIR/$name"; then
-                undone+=("$name")
+        dest="$CERTS_DIR/$name"
+        if [ -L "$dest" ] || [ -d "$dest" ]; then
+            refused+=("$name")
+        elif in_list "$name" "${BACKED[@]+"${BACKED[@]}"}"; then
+            if mv -f -- "$STAGE/.old/$name" "$dest"; then
+                restored+=("$name")
             else
                 stuck+=("$name")
             fi
-        elif rm -f -- "${CERTS_DIR:?}/$name"; then
-            undone+=("$name")
+        elif rm -f -- "${dest:?}"; then
+            removed+=("$name")
         else
             stuck+=("$name")
         fi
     done
-    if [ ${#stuck[@]} -gt 0 ]; then
-        echo "Error: the move into $CERTS_DIR was cut off and could not be undone for: ${stuck[*]}; these files came from this run and may not match the others, so check them before use" >&2
-    elif [ ${#undone[@]} -gt 0 ]; then
-        echo "Error: the move into $CERTS_DIR was cut off; these files had already been moved and were put back as they were: ${undone[*]}" >&2
+    if [ ${#stuck[@]} -gt 0 ] || [ ${#refused[@]} -gt 0 ]; then
+        KEEP_STAGE=true
+        shopt -s nullglob dotglob
+        for old in "$STAGE/.old"/*; do
+            kept+=("${old##*/}")
+        done
+        shopt -u nullglob dotglob
+        echo "Error: the move into $CERTS_DIR was cut off and could not be fully undone." >&2
+        if [ ${#stuck[@]} -gt 0 ]; then
+            echo "Error: could not put back or remove: ${stuck[*]}" >&2
+        fi
+        if [ ${#refused[@]} -gt 0 ]; then
+            echo "Error: left alone because a link or a folder is in their place: ${refused[*]}" >&2
+        fi
+        echo "Error: the old files are kept in $STAGE/.old: ${kept[*]+"${kept[*]}"}; check them against the files in $CERTS_DIR, move the ones you need back, then remove $STAGE" >&2
+    elif [ ${#restored[@]} -gt 0 ] || [ ${#removed[@]} -gt 0 ]; then
+        msg="the move into $CERTS_DIR was cut off"
+        if [ ${#restored[@]} -gt 0 ]; then
+            msg+="; put back as they were: ${restored[*]}"
+        fi
+        if [ ${#removed[@]} -gt 0 ]; then
+            msg+="; removed because this run made them: ${removed[*]}"
+        fi
+        echo "Error: $msg" >&2
     fi
 }
 
 cleanup() {
     rollback_commit
-    if [[ -n "$STAGE" && "$STAGE" == */.staging.* ]]; then
+    if [ "$KEEP_STAGE" = false ] && [[ -n "$STAGE" && "$STAGE" == */.staging.* ]]; then
         rm -rf -- "${STAGE:?}"
     fi
 }
 trap cleanup EXIT
+trap 'cleanup; exit 129' HUP
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
 
@@ -168,7 +216,7 @@ check_folder_contents() {
             die "$entry is a symbolic link; remove it or choose another output folder"
         fi
         if [ -d "$entry" ] && [[ "${entry##*/}" == .staging.* ]]; then
-            die "$entry is a staging folder left by a run of this script that was cut off, or a run still going; if none is going, check that the keys and certificates in $CERTS_DIR are a matching set (the staging folder may hold copies of files that a cut-off --force run replaced), then delete it with rm -r"
+            die "$entry is a staging folder left by a run of this script that was cut off, or a run still going; if none is going, first move the files in $entry/.old back into $CERTS_DIR (they are the old copies of files a cut-off --force run replaced, and the new ones may not match the rest), check that each key matches its certificate, then remove the staging folder with rm -r"
         fi
         if [ ! -f "$entry" ]; then
             die "$entry is not a regular file; remove it or choose another output folder"
@@ -948,12 +996,21 @@ plan_outputs
 STEP="create staging folder"
 STAGE=$(mktemp -d "$CERTS_DIR/.staging.XXXXXX") || die "cannot make a staging folder in $CERTS_DIR"
 
+# A hard link keeps the old file without copying key material. Where the
+# filesystem refuses links, a copy that keeps mode and owner, inside the
+# owner-only staging folder, does the same job; refusing instead would make
+# every run after the first fail, because ca.srl is always replaced.
+keep_old() {
+    # ln fails when hard links are not supported; the cp below is the fallback.
+    ln -- "$1" "$2" 2> /dev/null || cp -p -- "$1" "$2" || die "cannot keep a copy of $1, so it was not replaced"
+}
+
 # Moves one staged file into the output folder, or dies. Without --force, a
 # file that appeared since the check is not replaced. A replaced file is kept
-# first as a hard link in $STAGE/.old, so rollback_commit can restore it and
-# the name never goes missing. The destination is checked on both sides of the
-# move because mv would put the file inside a folder, or a link to one, that
-# appeared there.
+# first in $STAGE/.old, so rollback_commit can restore it and the name never
+# goes missing. The destination is checked on both sides of the move because
+# mv would put the file inside a folder, or a link to one, that appeared there.
+# MOVING is set before the mv so a signal that lands during it is rolled back.
 place_file() {
     local src="$1" name dest replace=false
     name=$(basename -- "$src")
@@ -966,9 +1023,10 @@ place_file() {
         if [ "$replace" = false ]; then
             die "$dest appeared while this run was working; it was not replaced"
         fi
-        ln -- "$dest" "$STAGE/.old/$name" || die "cannot keep a copy of $dest, so it was not replaced"
+        keep_old "$dest" "$STAGE/.old/$name"
         BACKED+=("$name")
     fi
+    MOVING="$name"
     if [ "$replace" = true ]; then
         mv -f -- "$src" "$dest" || die "cannot move $name into $CERTS_DIR"
     else
@@ -981,9 +1039,15 @@ place_file() {
         if [ -d "$dest" ]; then
             rm -f -- "${dest:?}/$name"
         fi
+        # A file that was new left nothing behind to undo; an old one still
+        # has its copy to restore.
+        if ! in_list "$name" "${BACKED[@]+"${BACKED[@]}"}"; then
+            MOVING=""
+        fi
         die "$dest is not a regular file after the move; a link or a folder appeared there while this run was working"
     fi
     PLACED+=("$name")
+    MOVING=""
 }
 
 # The marker goes first, so a folder this script made, and cut off before the
