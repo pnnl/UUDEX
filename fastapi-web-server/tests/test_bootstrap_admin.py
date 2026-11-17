@@ -194,8 +194,11 @@ def test_first_run_creates_an_admin_and_the_second_run_refuses(db: Database) -> 
     first = run_command(db.dsn, "--cn", "first-admin", "--participant-id", str(participant_id))
 
     assert first.returncode == 0, first.stderr
-    # Only the settings source is logged: a path, no secret.
-    assert first.stderr == f"uudex-server: Loading settings from: {os.environ['UUDEX_SETTINGS']}\n"
+    # Only the settings file and the database in use are logged: a path and an address.
+    assert first.stderr == (
+        f"uudex-server: Loading settings from: {os.environ['UUDEX_SETTINGS']}\n"
+        f"uudex-server: database: {db.dsn}\n"
+    )
     rows = db.endpoints()
     assert len(rows) == 1
     row = rows[0]
@@ -387,8 +390,88 @@ def test_an_unparseable_setting_does_not_print_its_value(db: Database) -> None:
 
     result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", "1", env=env)
 
-    assert_failed(result, "could not load the settings; nothing was written")
+    assert_failed(
+        result,
+        "could not load the settings; nothing was written",
+        tail="; invalid or missing: trusted_proxy_hosts",
+    )
     assert db.endpoints() == []
+
+
+@pytest.mark.parametrize(
+    ("dsn", "shown"),
+    [
+        (
+            f"postgresql+asyncpg://user:{SECRET}@127.0.0.1:1/uudex",
+            "postgresql+asyncpg://user:***@127.0.0.1:1/uudex",
+        ),
+        (
+            f"postgresql+asyncpg://user@127.0.0.1:1/uudex?password={SECRET}&host=db",
+            "postgresql+asyncpg://user@127.0.0.1:1/uudex?host=db&password=%2A%2A%2A",
+        ),
+    ],
+    ids=["password-slot", "password-in-query"],
+)
+def test_the_database_in_use_is_printed_with_the_password_hidden(dsn: str, shown: str) -> None:
+    result = run_command(dsn, "--cn", "an-admin", "--participant-id", "1")
+
+    assert f"uudex-server: database: {shown}\n" in result.stderr
+    assert SECRET not in result.stdout + result.stderr
+
+
+def test_the_database_line_names_the_environment_not_the_settings_file(
+    db: Database, tmp_path: Path
+) -> None:
+    other = Database(tmp_path / "from-the-file.db")
+    settings_file = tmp_path / "named.env"
+    settings_file.write_text(f"POSTGRES_DSN={other.dsn}\n")
+    env = settings_env(db.dsn) | {"UUDEX_SETTINGS": str(settings_file)}
+    participant_id = db.add_participant()
+
+    result = run_command(
+        db.dsn, "--cn", "an-admin", "--participant-id", str(participant_id), env=env
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"uudex-server: database: {db.dsn}\n" in result.stderr
+    assert other.dsn not in result.stderr.split("database:", 1)[1]
+    assert [e.certificate_dn for e in db.endpoints()] == ["an-admin"]
+
+
+def test_a_cleanup_error_does_not_replace_the_refusal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def refuse(cn: str, participant_id: int, progress: cli.Progress) -> str:
+        raise Refused("an active administrator already exists")
+
+    async def broken_shutdown() -> None:
+        raise RuntimeError(f"cleanup {SECRET}")
+
+    monkeypatch.setattr(cli, "bootstrap_admin", refuse)
+    monkeypatch.setattr(cli, "shutdown_db", broken_shutdown)
+
+    with pytest.raises(Refused, match="an active administrator already exists"):
+        asyncio.run(cli._run("an-admin", 1, cli.Progress()))
+
+    captured = capsys.readouterr()
+    assert captured.err == "uudex-server: also failed while closing the database (RuntimeError)\n"
+    assert SECRET not in captured.out + captured.err
+
+
+def test_a_cleanup_error_after_success_is_still_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def succeed(cn: str, participant_id: int, progress: cli.Progress) -> str:
+        return "some-uuid"
+
+    async def broken_shutdown() -> None:
+        raise RuntimeError("cleanup")
+
+    monkeypatch.setattr(cli, "bootstrap_admin", succeed)
+    monkeypatch.setattr(cli, "shutdown_db", broken_shutdown)
+
+    with pytest.raises(RuntimeError, match="cleanup"):
+        asyncio.run(cli._run("an-admin", 1, cli.Progress()))
 
 
 def test_a_rejected_insert_says_the_outcome_is_unknown(db: Database) -> None:

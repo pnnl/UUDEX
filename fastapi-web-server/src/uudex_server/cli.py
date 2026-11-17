@@ -7,12 +7,15 @@ operator starts the console script.
 import argparse
 import asyncio
 import logging
+import re
 import sys
 import uuid
 from collections.abc import Sequence
 
 from pydantic import ValidationError
+from pydantic_settings.exceptions import SettingsError
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 
 from uudex_server.core import client_cert
 from uudex_server.core.settings import get_settings
@@ -21,6 +24,8 @@ from uudex_server.repos.endpoint_repository import EndpointRepository
 from uudex_server.services.database_service import get_db_session, shutdown_db
 
 __all__ = ["Refused", "bootstrap_admin", "check_common_name", "main"]
+
+logger = logging.getLogger(__name__)
 
 # Serializes concurrent bootstrap runs on PostgreSQL. Arbitrary but fixed; it only has to be
 # the same in every run of this command.
@@ -57,6 +62,17 @@ _FAILURES = {
 }
 
 
+def _database_target(dsn: str) -> str:
+    """The database address with every secret in it hidden, safe to print."""
+    url = make_url(dsn)
+    # A secret can ride in the query (?password=...) as well as in the password slot.
+    hidden = {
+        key: "***" if any(word in key.lower() for word in ("pass", "secret", "key")) else value
+        for key, value in url.query.items()
+    }
+    return url.set(query=hidden).render_as_string(hide_password=True)
+
+
 def check_common_name(cn: str) -> None:
     """Apply the CN rules the server applies to a certificate, as a refusal."""
     try:
@@ -77,8 +93,11 @@ async def bootstrap_admin(cn: str, participant_id: int, progress: Progress | Non
     progress = progress or Progress()
     check_common_name(cn)
     progress.stage = "settings"
-    get_settings()
+    settings = get_settings()
     progress.stage = "connecting"
+    # The settings come from the environment, the file and the secrets directory, so the file
+    # alone does not say which database receives the administrator.
+    logger.info("database: %s", _database_target(settings.db_uri))
     async with get_db_session() as session:
         await session.connection()
         progress.stage = "checking"
@@ -139,9 +158,19 @@ def _parser() -> argparse.ArgumentParser:
 
 async def _run(cn: str, participant_id: int, progress: Progress) -> str:
     try:
-        return await bootstrap_admin(cn, participant_id, progress)
-    finally:
-        await shutdown_db()
+        endpoint_uuid = await bootstrap_admin(cn, participant_id, progress)
+    except BaseException:
+        # The error already propagating is the outcome; a cleanup error must not replace it.
+        try:
+            await shutdown_db()
+        except Exception as cleanup_error:
+            print(
+                f"uudex-server: also failed while closing the database ({type(cleanup_error).__name__})",
+                file=sys.stderr,
+            )
+        raise
+    await shutdown_db()
+    return endpoint_uuid
 
 
 def _quiet_logging() -> None:
@@ -149,7 +178,7 @@ def _quiet_logging() -> None:
 
     That module sends DEBUG output, SQL statements and their parameters included, to stdout. An
     operator command prints only its result on stdout and nothing below a warning on stderr,
-    except the one line that names the settings source.
+    except two lines: the settings source and the database in use.
     """
     root = logging.getLogger()
     for handler in list(root.handlers):
@@ -158,16 +187,22 @@ def _quiet_logging() -> None:
     handler.setFormatter(logging.Formatter("uudex-server: %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.WARNING)
-    # The settings loader logs which file it read, a path and no secret: the operator needs it
-    # to know which database received the administrator.
+    # Both lines carry no secret: a file path, and a database address with the password hidden.
     logging.getLogger("uudex_server.core.settings").setLevel(logging.INFO)
+    logger.setLevel(logging.INFO)
 
 
 def _failure_message(error: Exception, stage: str) -> str:
     message = f"uudex-server: failed: {_FAILURES[stage]} ({type(error).__name__})"
-    if stage == "settings" and isinstance(error, ValidationError):
-        fields = sorted({".".join(str(part) for part in item["loc"]) for item in error.errors()})
-        message += f"; invalid or missing: {', '.join(fields)}"
+    if stage == "settings":
+        fields: set[str] = set()
+        if isinstance(error, ValidationError):
+            fields = {".".join(str(part) for part in item["loc"]) for item in error.errors()}
+        elif isinstance(error, SettingsError):
+            # The message names the field and the source, never the value.
+            fields = set(re.findall(r'error parsing value for field "([^"]+)"', str(error)))
+        if fields:
+            message += f"; invalid or missing: {', '.join(sorted(fields))}"
     return message
 
 
