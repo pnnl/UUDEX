@@ -10,6 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import SQLModel, select
 
@@ -387,6 +388,33 @@ def test_an_unparseable_setting_does_not_print_its_value(db: Database) -> None:
     result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", "1", env=env)
 
     assert_failed(result, "could not load the settings; nothing was written")
+    assert db.endpoints() == []
+
+
+def test_a_rejected_insert_says_the_outcome_is_unknown(db: Database) -> None:
+    participant_id = db.add_participant()
+
+    async def add_failing_trigger(session: AsyncSession) -> None:
+        await session.execute(
+            text(
+                "CREATE TRIGGER refuse_insert BEFORE INSERT ON endpoint "
+                "BEGIN SELECT RAISE(ABORT, 'refused by trigger'); END"
+            )
+        )
+
+    db.run(add_failing_trigger)
+
+    result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", str(participant_id))
+
+    assert result.returncode == 1
+    assert result.stdout == ""
+    *_, last = result.stderr.splitlines()
+    assert re.fullmatch(
+        r"uudex-server: failed: failed while writing the administrator; the outcome is unknown: "
+        r"look for an endpoint with that certificate DN before running again \(\w+\)",
+        last,
+    )
+    assert "nothing was written" not in result.stderr
     assert db.endpoints() == []
 
 
