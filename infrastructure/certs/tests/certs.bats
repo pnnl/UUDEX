@@ -37,6 +37,9 @@ STUBEOF
 }
 
 teardown() {
+    if [ -n "${TMP_CASE_DIR:-}" ]; then
+        rm -rf -- "${TMP_CASE_DIR:?}"
+    fi
     [ -n "${TT:-}" ] || return 0
     # Tests chmod folders to 000 or 500; restore access so the removal works.
     chmod -R u+rwx "$TT" 2>/dev/null || true
@@ -1402,8 +1405,11 @@ assert_refusal_changes_nothing() {
     [ ! -e "$TT/g/p/out" ]
 }
 
+# BATS_CERTS_TMP names the folder; teardown removes it, so a run with a broken
+# parent check does not leave keys in /tmp.
 @test "parents: a folder under /tmp is refused, naming /tmp, and nothing is made" {
-    local mode d="/tmp/uudex-certs-bats-$$-x"
+    local mode d="${BATS_CERTS_TMP:-/tmp/uudex-certs-bats-$$-x}"
+    TMP_CASE_DIR="$d"
     mode=$(ls -ld /tmp)
     [ "${mode:8:1}" = "w" ] || skip "/tmp is not writable by others here"
     cd "$WORKDIR"
@@ -1677,6 +1683,17 @@ same_pair() {
     assert_refusal_changes_nothing "$d" "$d/.staging.abc123 is a staging folder left by a run of this script" bob
     [[ "$output" == *"delete it with rm -r"* ]]
     [ -d "$d/.staging.abc123" ]
+}
+
+@test "output folder: a '..' below a folder that does not exist yet is refused, and the folder it would reach stays empty" {
+    cd "$WORKDIR"
+    mkdir -m 777 "$TT/open"
+    chmod 777 "$TT/open"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$TT/nx/../open/out"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"has a '.' or '..' part below a folder that does not exist yet"* ]] || { echo "$output"; return 1; }
+    [ -z "$(ls -A "$TT/open")" ]
+    [ ! -e "$TT/nx" ]
 }
 
 @test "client names: ca, ca-trusted, server and localhost are refused before the folder is made; a similar name is fine" {
