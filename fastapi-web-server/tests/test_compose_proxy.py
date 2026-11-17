@@ -15,6 +15,8 @@ SERVER_DIR = Path(__file__).resolve().parents[1]
 Doc = dict[str, Any]
 
 PROXY_PORT = "${UUDEX_PROXY_BIND:-127.0.0.1}:8443:8443"
+CERTS_DIR = "${UUDEX_CERTS_DIR:?set in .env.compose}"
+PROXY_CERT_FILES = [f"{CERTS_DIR}/{name}" for name in ("ca.crt", "localhost.crt", "localhost.key")]
 AEAD_ECDHE_SUITE = re.compile(
     r"^TLS_ECDHE_(RSA|ECDSA)_WITH_(AES_(128|256)_GCM_SHA\d+|CHACHA20_POLY1305_SHA256)$"
 )
@@ -96,6 +98,11 @@ def test_no_service_mounts_the_ca_key_or_the_docker_socket(compose):
             assert "docker.sock" not in text, (name, text)
     for secret in compose["secrets"].values():
         assert "ca.key" not in secret["file"]
+
+
+def test_proxy_mounts_exactly_the_three_certificate_files(compose):
+    volumes = compose["services"]["proxy"]["volumes"]
+    assert sorted(volume["source"] for volume in volumes) == sorted(PROXY_CERT_FILES)
 
 
 def test_every_proxy_bind_mount_is_read_only(compose):
