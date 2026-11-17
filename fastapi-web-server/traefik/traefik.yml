@@ -21,3 +21,10 @@ providers:
 
 log:
   level: INFO
+
+# One line per request on stdout. Headers are dropped: the forwarded client certificate
+# travels in one, and must not reach the logs.
+accessLog:
+  fields:
+    headers:
+      defaultMode: drop
