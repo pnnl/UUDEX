@@ -205,7 +205,7 @@ def test_refuses_a_certificate_dn_that_is_already_taken(db: Database) -> None:
 
 @pytest.mark.parametrize(
     "cn",
-    ["", "   ", " padded", "padded ", "tab\there", "new\nline", "zero​width"],
+    ["", "   ", " padded", "padded ", "tab\there", "new\nline", "zero\u200bwidth"],
     ids=["empty", "blank", "leading", "trailing", "tab", "newline", "format-char"],
 )
 def test_refuses_a_common_name_the_server_would_refuse(db: Database, cn: str) -> None:
