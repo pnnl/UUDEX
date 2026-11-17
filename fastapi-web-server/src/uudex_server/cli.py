@@ -48,9 +48,18 @@ async def bootstrap_admin(cn: str, participant_id: int) -> str:
     """
     check_common_name(cn)
     async with get_db_session() as session:
-        # PostgreSQL does not serialize two readers that both see no admin; the lock makes the
-        # second run wait and then see the first one's row. SQLite serializes writers itself.
-        if session.bind.dialect.name == "postgresql":
+        # Two runs must not both see "no administrator". Each backend takes a lock before the
+        # checks, so the second run waits and then sees the first one's row.
+        dialect = session.bind.dialect.name
+        if dialect == "sqlite":
+            # A SQLite transaction takes the write lock only at its first write, which is after
+            # the checks, so take it now. A waiting run gives up after the driver's timeout.
+            await session.execute(text("BEGIN IMMEDIATE"))
+        elif dialect == "postgresql":
+            # UNVERIFIED (#39): no test runs this branch; there is no PostgreSQL test setup yet.
+            # READ COMMITTED gives the checks a fresh snapshot after the lock wait, so they see
+            # the first run's row; REPEATABLE READ would keep a snapshot taken before the wait.
+            await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))
             await session.execute(
                 text("SELECT pg_advisory_xact_lock(:key)"), {"key": _BOOTSTRAP_LOCK_KEY}
             )

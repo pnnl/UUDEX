@@ -146,6 +146,35 @@ def run_command(dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def test_two_runs_started_together_create_exactly_one_admin(db: Database) -> None:
+    participant_id = db.add_participant()
+    assert CONSOLE_SCRIPT.exists(), f"console script not installed: {CONSOLE_SCRIPT}"
+
+    runs = [
+        subprocess.Popen(
+            [str(CONSOLE_SCRIPT), "bootstrap-admin", "--cn", cn, "--participant-id"]
+            + [str(participant_id)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=settings_env(db.dsn),
+            cwd="/",
+        )
+        for cn in ("admin-a", "admin-b")
+    ]
+    outputs = [run.communicate(timeout=120) for run in runs]
+
+    codes = sorted(run.returncode for run in runs)
+    assert codes == [0, 1], outputs
+    refused = [err for _, err in outputs if "refused" in err]
+    assert len(refused) == 1
+    assert "an active administrator already exists" in refused[0]
+    rows = db.endpoints()
+    assert len(rows) == 1
+    assert rows[0].uudex_administrator_sw == "Y"
+    assert rows[0].active_sw == "Y"
+
+
 def assert_refused(result: subprocess.CompletedProcess[str], message: str) -> None:
     assert result.returncode == 1
     assert result.stdout == ""
