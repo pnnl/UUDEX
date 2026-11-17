@@ -1,6 +1,7 @@
 """`uudex-server bootstrap-admin` creates the first administrator, and only the first."""
 
 import asyncio
+import os
 import subprocess
 import sys
 import uuid
@@ -94,10 +95,27 @@ def db(tmp_path: Path) -> Database:
     return database
 
 
+@pytest.fixture(autouse=True)
+def isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the project's own .env and secrets directory out of every subprocess."""
+    settings_file = tmp_path / "empty.env"
+    settings_file.write_text("")
+    secrets_dir = tmp_path / "empty-secrets"
+    secrets_dir.mkdir()
+    monkeypatch.setenv("UUDEX_SETTINGS", str(settings_file))
+    monkeypatch.setenv("UUDEX_SECRETS_DIR", str(secrets_dir))
+
+
 def settings_env(dsn: str) -> dict[str, str]:
-    """The only environment the subprocess gets: the settings the server requires."""
+    """The only environment the subprocess gets: the settings the server requires.
+
+    UUDEX_SETTINGS and UUDEX_SECRETS_DIR point at empty paths, so a developer's own .env or
+    secrets directory cannot change what a test sees.
+    """
     return {
         "PATH": str(CONSOLE_SCRIPT.parent),
+        "UUDEX_SETTINGS": os.environ["UUDEX_SETTINGS"],
+        "UUDEX_SECRETS_DIR": os.environ["UUDEX_SECRETS_DIR"],
         "POSTGRES_DSN": dsn,
         "X_SSL_CERT": "placeholder",
         "MESSAGEBUS_CONNECTION": f"amqp://user:{SECRET}@127.0.0.1:1/",
@@ -203,19 +221,29 @@ def test_refuses_a_certificate_dn_that_is_already_taken(db: Database) -> None:
     assert after[0].uudex_administrator_sw == "N"
 
 
+EMPTY_CN = "the common name is empty"
+BAD_CN = "the common name has edge whitespace or control or format characters"
+
+
 @pytest.mark.parametrize(
-    "cn",
-    ["", "   ", " padded", "padded ", "tab\there", "new\nline", "zero\u200bwidth"],
+    ("cn", "reason"),
+    [
+        ("", EMPTY_CN),
+        ("   ", EMPTY_CN),
+        (" padded", BAD_CN),
+        ("padded ", BAD_CN),
+        ("tab\there", BAD_CN),
+        ("new\nline", BAD_CN),
+        ("zero\u200bwidth", BAD_CN),
+    ],
     ids=["empty", "blank", "leading", "trailing", "tab", "newline", "format-char"],
 )
-def test_refuses_a_common_name_the_server_would_refuse(db: Database, cn: str) -> None:
+def test_refuses_a_common_name_the_server_would_refuse(db: Database, cn: str, reason: str) -> None:
     participant_id = db.add_participant()
 
     result = run_command(db.dsn, "--cn", cn, "--participant-id", str(participant_id))
 
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert "refused" in result.stderr
+    assert_refused(result, reason)
     assert db.endpoints() == []
 
 
