@@ -61,22 +61,21 @@ pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1"; FAILED=1; }
 
 # Every external call below goes through one of these, so a hung daemon, server or listener
-# ends as a failure after a bound and never as a hang. -k 5 follows up with KILL.
-dk() { timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"; }
-curl_t() { timeout -k 5 $((NET_TIMEOUT + 5)) curl "$@"; }
-ossl() { timeout -k 5 30 openssl "$@"; }
+# ends as a failure after a bound and never as a hang. -k 5 follows up with KILL. --foreground
+# keeps the command in the script's process group, so guarded_main can stop it with a signal.
+dk() { timeout --foreground -k 5 "$DOCKER_TIMEOUT" docker "$@"; }
+curl_t() { timeout --foreground -k 5 $((NET_TIMEOUT + 5)) curl "$@"; }
+ossl() { timeout --foreground -k 5 30 openssl "$@"; }
 
 cleanup() {
   [ -z "$TMP" ] || rm -rf -- "$TMP"
   # The throwaway container normally removes itself (--rm), so "no such container" is the
   # expected failure here; a container left by an interrupted or timed-out run is removed.
-  # Its name is fixed in preflight because a $(...) call cannot hand a name back.
+  # Its name is fixed in guarded_main because a $(...) call cannot hand a name back.
   # This is a cleanup, not a read of state a check depends on.
   [ -z "$CONTAINER" ] || dk rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 # The only running container of a compose service, or an error: a second one would make
 # every later check read the wrong container.
@@ -123,7 +122,6 @@ preflight() {
   case "$PORT" in '' | *[!0-9]*) die "cannot read a port from 'docker port': $line" ;; esac
   URL="https://localhost:$PORT"
   APP_NET="${PROJECT}_app"
-  CONTAINER="${PROJECT}-check-$$"
   PROXY_IP=$(dk inspect --format "{{(index .NetworkSettings.Networks \"$APP_NET\").IPAddress}}" "$PROXY") \
     || die "cannot read the proxy address on $APP_NET"
   [ -n "$PROXY_IP" ] || die "the proxy has no address on $APP_NET"
@@ -268,7 +266,7 @@ check_valid_client() {
 # Runs a command in a throwaway container on the app network and prints its output. The
 # exit status is the command's, or 124 and 137 when the outer limit ended it.
 run_throwaway() {
-  timeout -k 5 60 docker run --rm --init --name "$CONTAINER" --memory 64m --memory-swap 64m \
+  timeout --foreground -k 5 60 docker run --rm --init --name "$CONTAINER" --memory 64m --memory-swap 64m \
     --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --user 65534:65534 \
     --read-only --pull never --network "$APP_NET" "$THROWAWAY_IMAGE" "$@" 2>&1
 }
@@ -440,7 +438,6 @@ check_mounts() {
 }
 
 main() {
-  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
   preflight
   make_rogue || die "cannot make the second CA and its client certificate with openssl"
   check_valid_client
@@ -457,5 +454,22 @@ main() {
   echo "all checks passed"
 }
 
+# Runs main as a job in its own process group and waits for it. A trap runs at once while the
+# shell is in wait, but only after a foreground command or $(...) ends, so INT and TERM
+# during a hung call would otherwise wait out its time bound. On a signal the whole group
+# is stopped, and the EXIT trap then removes the temporary folder and the throwaway container.
+guarded_main() {
+  local pid rc=0
+  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
+  [ -z "$PROJECT" ] || CONTAINER="${PROJECT}-check-$$"
+  set -m
+  main &
+  pid=$!
+  trap 'kill -TERM -- "-$pid" 2>/dev/null || true; exit 130' INT
+  trap 'kill -TERM -- "-$pid" 2>/dev/null || true; exit 143' TERM
+  wait "$pid" || rc=$?
+  exit "$rc"
+}
+
 # Sourcing the file loads the functions without running anything, so a test can call one.
-if [ "${BASH_SOURCE[0]}" = "$0" ]; then main; fi
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then guarded_main; fi
