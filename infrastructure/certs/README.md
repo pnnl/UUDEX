@@ -112,9 +112,12 @@ changes nothing. Each message names the file or folder.
 - A client that already has `<name>.key`, `.crt` or `.p12`, and a
   `ca-trusted.crt` that is not a copy of `ca.crt`. `--force` replaces them: the
   new files are built beside the old ones and renamed over them. If the move
-  fails part-way, the files already moved are put back and the message names
-  them, so the folder is as it was. Only a `kill -9` during the move can leave
-  a mixed set, and then the `.staging.*` folder holds the old files.
+  fails part-way, or is cut off by Ctrl-C, `kill` or a closed terminal (INT,
+  TERM, HUP), the files already moved are put back or, if this run made them,
+  removed, and the message names them, so the folder is as it was. If a file
+  cannot be put back, the `.staging.*` folder is kept, and the message names it
+  and the old files in its `.old` folder. Only a `kill -9` during the move can
+  leave a mixed set, and then the `.staging.*` folder holds the old files.
 - Only one of `ca.key` and `ca.crt`, or a certificate with no CA. Restore the
   CA or empty the folder; `--force` does not apply. A complete CA is reused and
   never replaced.
@@ -135,7 +138,8 @@ changes nothing. Each message names the file or folder.
   script, has no marker either: check its CA and certificates, then create an
   empty file named `.uudex-certs` in it. Do not make a new CA beside them.
 - A `.staging.*` folder, left by a run that was killed (or one still going).
-  Check the keys and certificates are a matching set, then delete it with
+  First move the files in its `.old` folder back into the output folder, check
+  that each key matches its certificate, then delete the staging folder with
   `rm -r`.
 - Any parent of the output folder, up to `/`, that the group or others can write
   (sticky or not) or that is owned by neither you nor root. `/tmp/certs` is
