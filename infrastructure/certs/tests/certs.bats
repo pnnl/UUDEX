@@ -1405,10 +1405,12 @@ assert_refusal_changes_nothing() {
     [ ! -e "$TT/g/p/out" ]
 }
 
-# BATS_CERTS_TMP names the folder; teardown removes it, so a run with a broken
-# parent check does not leave keys in /tmp.
+# Teardown removes this folder, so a run with a broken parent check does not
+# leave keys in /tmp. BATS_CERTS_TMP is for proof runs only: it must name a path
+# that does not exist yet, and a path outside /tmp makes this test fail.
 @test "parents: a folder under /tmp is refused, naming /tmp, and nothing is made" {
     local mode d="${BATS_CERTS_TMP:-/tmp/uudex-certs-bats-$$-x}"
+    [ ! -e "$d" ] || { echo "$d already exists; BATS_CERTS_TMP must name a new path"; return 1; }
     TMP_CASE_DIR="$d"
     mode=$(ls -ld /tmp)
     [ "${mode:8:1}" = "w" ] || skip "/tmp is not writable by others here"
@@ -1708,6 +1710,21 @@ assert_signal_during_move_rolled_back() {
     same_pair "$d/alice"
 }
 
+@test "all or nothing: a file that appears between the check and the move is kept, the run fails, and nothing else of the run stays" {
+    cd "$WORKDIR"
+    local d="$TT/o" before expected
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    stub_mv '\.staging\.[[:alnum:]]{6}/bob\.p12 ' "printf planted > '$d/bob.p12'"
+    PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$d/bob.p12 appeared while this run was working"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"successfully"* ]]
+    [ "$(cat "$d/bob.p12")" = "planted" ]
+    expected=$(printf '%s\n%s bob.p12\n' "$before" "$(printf planted | sha256sum | cut -c1-64)" | sort)
+    [ "$(snapshot "$d" | sort)" = "$expected" ]
+}
+
 # A reused server pair, key modes and server names are checked.
 
 @test "reused server pair: a key that does not match the certificate is refused, naming both files, and nothing changes" {
@@ -1736,6 +1753,10 @@ assert_signal_during_move_rolled_back() {
         assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
         chmod 604 "$d/$k.key"
         assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
+        chmod 620 "$d/$k.key"
+        assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
+        chmod 602 "$d/$k.key"
+        assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
         chmod 600 "$d/$k.key"
     done
     run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
@@ -1757,6 +1778,26 @@ assert_signal_during_move_rolled_back() {
     [ "$status" -eq 0 ]
     run openssl x509 -in "$d/server.crt" -noout -ext subjectAltName
     [[ "$output" == *"DNS:c.example"* && "$output" != *"a.example"* ]]
+}
+
+@test "--server-only over a certificate with more names, or another address, is refused and the certificate is unchanged" {
+    cd "$WORKDIR"
+    local d="$TT/o" before
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example --domain b.example
+    [ "$status" -eq 0 ]
+    before=$(snapshot "$d")
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already exists for the names a.example b.example, not the requested a.example,"* ]] || { echo "$output"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    rm -rf -- "${d:?}"
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example --domain 10.0.0.1
+    [ "$status" -eq 0 ]
+    before=$(snapshot "$d")
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example --domain 10.0.0.2
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already exists for the names a.example 10.0.0.1, not the requested a.example 10.0.0.2"* ]] || { echo "$output"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
 }
 
 @test "--server-only over a server certificate for the same names succeeds, including an address written another way" {
