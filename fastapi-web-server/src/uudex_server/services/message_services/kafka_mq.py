@@ -76,7 +76,7 @@ class KafkaService(MessageBrokerServiceBase):
             subscriptions = self._consumer.subscription()
             subscriptions.add(subject_name)
             self._consumer.subscribe(subscriptions)
-        except:
+        except Exception:
             return None
         return tag + subject_name + subject_uuid
 
@@ -87,7 +87,7 @@ class KafkaService(MessageBrokerServiceBase):
             subscriptions = self._consumer.subscription()
             subscriptions.remove(subject_name)
             self._consumer.subscribe(subscriptions)
-        except:
+        except Exception:
             return 0
         return 1
 
@@ -95,7 +95,7 @@ class KafkaService(MessageBrokerServiceBase):
         try:
             topic_list = [NewTopic(name=str(subject_name), num_partitions=1, replication_factor=1)]
             self._admin.create_topics(new_topics=topic_list, validate_only=False)
-        except:
+        except Exception:
             return 0
         return 1
 
@@ -105,7 +105,7 @@ class KafkaService(MessageBrokerServiceBase):
     def publish_message(self, subject_exchange, routing_key, payload, payload_enc="string"):
         try:
             self._producer.send(routing_key, payload)
-        except:
+        except Exception:
             return 0
         return 1
 
@@ -114,6 +114,6 @@ class KafkaService(MessageBrokerServiceBase):
             messages = []
             for message in self._consumer:
                 messages.append(message)
-        except:
+        except Exception:
             return None
         return messages

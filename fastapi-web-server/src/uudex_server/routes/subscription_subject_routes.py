@@ -10,7 +10,9 @@ subscription_subject_router = APIRouter(prefix="/subscription-subjects")
 
 @subscription_subject_router.get("/{subscription_uuid}/subjects")
 async def get_subscription_subjects(
-    subscription_uuid: str, session: SessionDep, user: UserDep
+    subscription_uuid: str,
+    session: SessionDep,
+    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
 ) -> list[SubscriptionSubject]:
     subscription_subjects: list[
         SubscriptionSubject

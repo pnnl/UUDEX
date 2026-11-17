@@ -93,6 +93,37 @@ ignore = [
     "ARG",      # Unused function args -> fixtures nevertheless are functionally relevant
     "S101",     # Use of assert detected
 ]
+# Instance-level ignores: each entry names the one rule and why it cannot be fixed in place.
+"infrastructure/postgresql/restart_docker_compose.py" = [
+    "PTH109",   # Dev helper outside the linted src/tests scope; Path.cwd() edit not in #11 scope
+]
+"src/uudex_server/models/endpoint_models.py" = [
+    "TCH001",   # Pydantic/SQLModel resolve these annotations at class build, so they must stay runtime imports
+]
+"src/uudex_server/models/auth_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/data_type_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/dataset_definition_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/dataset_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/participant_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/subject_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/models/subscription_subject_models.py" = [
+    "F821",     # SQLModel string forward references resolved by the mapper registry
+]
+"src/uudex_server/services/message_services/kafka_mq.py" = [
+    "ARG002",   # Overrides of the broker base interface; Kafka does not use every parameter
+]
 
 [tool.ruff.format]
 quote-style = "double"

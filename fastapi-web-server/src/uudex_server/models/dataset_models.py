@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlmodel import Field
+from sqlmodel import Field, Relationship
 
 from .base import BaseModel, TimeStampMixin
 
@@ -47,9 +47,6 @@ class DatasetRead(BaseModel):
 
 class DatasetDelete(BaseModel):
     dataset_id: int
-
-
-from sqlmodel import Field, Relationship
 
 
 class Dataset(TimeStampMixin, table=True):

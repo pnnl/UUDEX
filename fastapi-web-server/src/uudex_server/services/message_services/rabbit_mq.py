@@ -66,12 +66,10 @@ class RabbitMqService(UUDEXBrokerService):
 
     def create_subscription_subject(self, subscription_uuid, subject_uuid, subject_name, tag):
         queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
-        rc = self._client.create_queue(
-            "/", queue_name, auto_delete=False, durable=True, exclusive=False
-        )
+        self._client.create_queue("/", queue_name, auto_delete=False, durable=True, exclusive=False)
 
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        rc = self._client.create_binding("/", exchange_name, queue_name, "")
+        self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
 
@@ -95,7 +93,7 @@ class RabbitMqService(UUDEXBrokerService):
                 kwargs["arguments"]["x-max-length-bytes"] = max_queue_size_kb
             if max_message_count is not None:
                 kwargs["arguments"]["x-max-length"] = max_message_count
-            rc = self._client.create_queue(
+            self._client.create_queue(
                 "/", queue_name, auto_delete=False, durable=True, exclusive=False, **kwargs
             )
         elif full_queue_behavior == "BLOCK_NEW":
@@ -106,16 +104,16 @@ class RabbitMqService(UUDEXBrokerService):
             if max_message_count is not None:
                 kwargs["arguments"]["x-max-length"] = max_message_count
             kwargs["arguments"]["x-overflow"] = "reject-publish"
-            rc = self._client.create_queue(
+            self._client.create_queue(
                 "/", queue_name, auto_delete=False, durable=True, exclusive=False, **kwargs
             )
         else:
             # Reverting to default behavior: full_queue_behavior==NO_CONSTRAINT
-            rc = self._client.create_queue(
+            self._client.create_queue(
                 "/", queue_name, auto_delete=False, durable=True, exclusive=False
             )
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        rc = self._client.create_binding("/", exchange_name, queue_name, "")
+        self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
 
