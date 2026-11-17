@@ -1,8 +1,9 @@
-from sqlalchemy import exists
+from sqlalchemy import exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from uudex_server.models import EndPoint
+from uudex_server.models.common_types import YNSwitch
 from uudex_server.repos import Repository
 
 
@@ -32,10 +33,24 @@ class EndpointRepository(Repository[EndPoint]):
         return result.scalars().all()
 
     async def has_any_admin_endpoints(self) -> bool:
-        """True when at least one active endpoint is a UUDEX administrator."""
+        """True when at least one active endpoint is a UUDEX administrator.
+
+        The active switch is a plain string compared in upper case, as login does, so a row that
+        can log in as an active administrator is never missed. The administrator switch is an
+        enum column that holds only Y or N, and PostgreSQL has no upper() for an enum.
+        """
         statement = select(
-            exists().where(EndPoint.uudex_administrator_sw == "Y", EndPoint.active_sw == "Y")
+            exists().where(
+                EndPoint.uudex_administrator_sw == YNSwitch.Y,
+                func.upper(EndPoint.active_sw) == "Y",
+            )
         )
+        result = await self.session.execute(statement)
+        return bool(result.scalar())
+
+    async def certificate_dn_exists(self, certificate_dn: str) -> bool:
+        """True when any endpoint, active or not, already has this certificate DN."""
+        statement = select(exists().where(EndPoint.certificate_dn == certificate_dn))
         result = await self.session.execute(statement)
         return bool(result.scalar())
 
