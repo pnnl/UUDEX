@@ -1,4 +1,4 @@
-# Development stack: UUDEX server and PostgreSQL. Example values are not for real deployment.
+# Development stack: UUDEX server, PostgreSQL and the verifying proxy. Example values are not for real deployment.
 # Start and stop commands: see README, "Compose".
 name: uudex
 
@@ -49,6 +49,9 @@ services:
         condition: service_healthy
     # No ports: published ports would let anyone forge the client-certificate header.
     # The verifying proxy joins the "app" network to reach this service.
+    environment:
+      # Only the proxy's fixed address may supply the client-certificate header.
+      TRUSTED_PROXY_HOSTS: '["172.29.77.20"]'
     secrets:
       - postgres_dsn
       - messagebus_connection
@@ -79,21 +82,90 @@ services:
       retries: 3
       start_period: 20s
 
+  # The only way in: verifies client certificates, then forwards the verified one to the server.
+  proxy:
+    image: traefik:v3.7.19@sha256:aa942a00bce033c909bf1f7e861d93761be4b31a035f10d2410d33e38a8f41cf
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    # The uid and gid that own the key on the host: a bind-mounted key keeps its owner and
+    # mode (0600), and root without capabilities cannot read it.
+    user: "${UUDEX_PROXY_UID:?set in .env.compose}:${UUDEX_PROXY_GID:?set in .env.compose}"
+    # Loopback by default. Set UUDEX_PROXY_BIND to widen it (see README).
+    ports:
+      - "${UUDEX_PROXY_BIND:-127.0.0.1}:8443:8443"
+    # Three single files, read-only. Never the folder, never ca.key, never the Docker socket.
+    # create_host_path is off so a wrong UUDEX_CERTS_DIR fails instead of creating a folder.
+    volumes:
+      - type: bind
+        source: ${UUDEX_CERTS_DIR:?set in .env.compose}/ca.crt
+        target: /certs/ca.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${UUDEX_CERTS_DIR:?set in .env.compose}/localhost.crt
+        target: /certs/server.crt
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${UUDEX_CERTS_DIR:?set in .env.compose}/localhost.key
+        target: /certs/server.key
+        read_only: true
+        bind:
+          create_host_path: false
+    configs:
+      - source: traefik_static
+        target: /etc/traefik/traefik.yml
+      - source: traefik_dynamic
+        target: /etc/traefik/dynamic.yml
+    networks:
+      # "edge" is not internal, which is what lets Docker publish the port.
+      edge:
+      app:
+        ipv4_address: 172.29.77.20
+    read_only: true
+    mem_limit: 256m
+    memswap_limit: 256m
+    pids_limit: 200
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
 networks:
-  # Both networks are internal: no outside access, and nothing is published.
+  # "app" and "db" are internal: no outside access. Only the proxy is published, through "edge".
   app:
     internal: true
-    # Fixed so the server can bind to its app address. To change the subnet, change every place
-    # that holds it: this subnet, ipv4_address and --host in the server command, and the
-    # healthcheck URL.
+    # Fixed so the server can bind to its app address. Addresses .10 (server) and .20 (proxy)
+    # are outside ip_range, so no other container can be given them while the proxy is down.
+    # To change the subnet, change every place that holds it (see README, "Compose").
     ipam:
       config:
         - subnet: 172.29.77.0/24
+          ip_range: 172.29.77.128/25
   db:
     internal: true
+  edge:
 
 volumes:
   db_data:
+
+# Proxy configuration, not secret. Mounted read-only at the targets above.
+configs:
+  traefik_static:
+    file: ./traefik/traefik.yml
+  traefik_dynamic:
+    file: ./traefik/dynamic.yml
 
 # File secrets are bind mounts, so uid/gid/mode here would be ignored. The host files must
 # be readable by uid 10001 (the server) and root (PostgreSQL); see README.

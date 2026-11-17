@@ -1,0 +1,23 @@
+# Static configuration for the verifying proxy. Routers, TLS and middlewares are in dynamic.yml.
+global:
+  checkNewVersion: false
+  sendAnonymousUsage: false
+
+# No "api" section: the dashboard and the management API stay off. The Docker provider is
+# not enabled either, so the proxy never needs the Docker socket.
+entryPoints:
+  websecure:
+    address: ":8443"
+  # Inside the container only (loopback, never published); used by the compose healthcheck.
+  ping:
+    address: "127.0.0.1:8082"
+
+ping:
+  entryPoint: ping
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+
+log:
+  level: INFO
