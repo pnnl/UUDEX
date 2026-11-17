@@ -1567,6 +1567,94 @@ same_pair() {
     [ "$(snapshot "$d" | sort)" = "$expected" ]
 }
 
+# A reused server pair, key modes and server names are checked.
+
+@test "reused server pair: a key that does not match the certificate is refused, naming both files, and nothing changes" {
+    cd "$WORKDIR"
+    local d="$TT/o" before
+    make_full_set "$d"
+    openssl genrsa -out "$d/localhost.key" 2048
+    chmod 600 "$d/localhost.key"
+    before=$(snapshot "$d")
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$d/localhost.crt and $d/localhost.key do not belong together"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"successfully"* ]]
+    [ "$(snapshot "$d")" = "$before" ]
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --force
+    [ "$status" -eq 0 ]
+    same_pair "$d/localhost"
+}
+
+@test "reused keys: a CA key or a server key that others can read is refused, naming it, until it is private again" {
+    cd "$WORKDIR"
+    local d="$TT/o" k
+    make_full_set "$d"
+    for k in ca localhost; do
+        chmod 640 "$d/$k.key"
+        assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
+        chmod 604 "$d/$k.key"
+        assert_refusal_changes_nothing "$d" "$d/$k.key can be read or changed by other users" bob
+        chmod 600 "$d/$k.key"
+    done
+    run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+}
+
+@test "--server-only over a server certificate for other names is refused, pointing to --force, and the certificate is unchanged" {
+    cd "$WORKDIR"
+    local d="$TT/o" before
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example --domain b.example
+    [ "$status" -eq 0 ]
+    before=$(snapshot "$d")
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain c.example
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"already exists for the names a.example b.example, not the requested c.example"*"--force"* ]] || { echo "$output"; return 1; }
+    [[ "$output" != *"completed"* ]]
+    [ "$(snapshot "$d")" = "$before" ]
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain c.example --force
+    [ "$status" -eq 0 ]
+    run openssl x509 -in "$d/server.crt" -noout -ext subjectAltName
+    [[ "$output" == *"DNS:c.example"* && "$output" != *"a.example"* ]]
+}
+
+@test "--server-only over a server certificate for the same names succeeds, including an address written another way" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain a.example --domain 10.0.0.1 --domain fe80::1
+    [ "$status" -eq 0 ]
+    run timeout 60 "$GEN_SCRIPT" --server-only Org -k 2048 -o "$d" --domain 10.0.0.1 --domain a.example --domain fe80:0:0::1
+    [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+    [[ "$output" == *"Domains: a.example 10.0.0.1 FE80:0:0:0:0:0:0:1"* ]]
+}
+
+@test "a client run over a server certificate for other names warns on stderr and the summary shows the names in the certificate" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --domain a.example
+    [ "$status" -eq 0 ]
+    run --separate-stderr timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" --domain z.example
+    [ "$status" -eq 0 ]
+    [[ "$stderr" == *"is for the names a.example, not the requested z.example"* ]] || { echo "$stderr"; return 1; }
+    [[ "$output" == *"Server Domains: a.example"* ]]
+    [[ "$output" != *"z.example"* ]]
+}
+
+@test "--server-only writes keys 0600 and certificates 0644 whatever the umask" {
+    cd "$WORKDIR"
+    local d="$TT/o" f mode
+    run bash -c 'umask 002; exec timeout 60 "$0" --server-only Org -k 2048 -o "$1" --domain a.example' "$GEN_SCRIPT" "$d"
+    [ "$status" -eq 0 ]
+    for f in ca.key server.key; do
+        mode=$(ls -l "$d/$f")
+        [ "${mode:0:10}" = "-rw-------" ] || { echo "$f $mode"; return 1; }
+    done
+    for f in ca.crt ca-trusted.crt server.crt; do
+        mode=$(ls -l "$d/$f")
+        [ "${mode:0:10}" = "-rw-r--r--" ] || { echo "$f $mode"; return 1; }
+    done
+}
+
 @test "client names: ca, ca-trusted, server and localhost are refused before the folder is made; a similar name is fine" {
     cd "$WORKDIR"
     local n

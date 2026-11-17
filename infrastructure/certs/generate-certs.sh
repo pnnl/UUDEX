@@ -809,10 +809,70 @@ fi
 STEP="prepare output folder"
 prepare_certs_dir
 
+# A key that others can read or change is already exposed, and signing with it
+# would keep relying on it.
+check_key_private() {
+    local f="$1"
+    path_info "$f" || die "cannot read the permissions of $f"
+    if [ "${PI_MODE:4:6}" != "------" ]; then
+        die "$f can be read or changed by other users (mode ${PI_MODE:1:9}); run chmod 600 on it before this script reuses it"
+    fi
+}
+
+# A server key and certificate that do not belong together would be reused
+# silently and fail later in the TLS handshake.
+check_server_pair() {
+    local crt="$CERTS_DIR/${SERVER_CERT_NAME}.crt" key="$CERTS_DIR/${SERVER_CERT_NAME}.key"
+    local crt_pub key_pub
+    crt_pub=$(openssl x509 -in "$crt" -noout -pubkey) || die "cannot read the certificate $crt"
+    key_pub=$(openssl pkey -in "$key" -passin pass: -pubout) || die "cannot read the key $key"
+    if [ "$crt_pub" != "$key_pub" ]; then
+        die "$crt and $key do not belong together (the key does not match the certificate); restore the matching pair, or use --force to make a new one"
+    fi
+}
+
+# SERVER_NAMES: the DNS names and addresses in an existing certificate.
+read_server_names() {
+    local san line item
+    local -a items
+    SERVER_NAMES=()
+    # openssl exits non-zero for a certificate with no subjectAltName; that
+    # certificate has no names, which the caller reports as a mismatch.
+    san=$(openssl x509 -in "$1" -noout -ext subjectAltName) || san=""
+    while IFS= read -r line; do
+        [[ "$line" == [[:space:]]* ]] || continue
+        IFS=, read -ra items <<< "$line"
+        for item in "${items[@]}"; do
+            item=$(trim "$item")
+            item="${item#DNS:}"
+            SERVER_NAMES+=("${item#IP Address:}")
+        done
+    done <<< "$san"
+}
+
+# True when the existing certificate holds exactly the requested names. An
+# address is compared by openssl, so 0:0::1 and ::1 count as the same.
+server_names_match() {
+    local crt="$CERTS_DIR/${SERVER_CERT_NAME}.crt" d n found
+    [ ${#SERVER_NAMES[@]} -eq ${#DOMAINS[@]} ] || return 1
+    for d in "${DOMAINS[@]}"; do
+        if is_ip_name "$d"; then
+            openssl x509 -in "$crt" -noout -checkip "$d" > /dev/null || return 1
+        else
+            found=false
+            for n in "${SERVER_NAMES[@]}"; do
+                if [ "$n" = "$d" ]; then found=true; fi
+            done
+            [ "$found" = true ] || return 1
+        fi
+    done
+}
+
 # Decides, before any key is made, which files this run writes, and refuses
 # when that would destroy or trust something it did not just make.
 # CA_NEW: make a CA. SERVER_NEW: make the server certificate. WRITE: the files
 # this run adds to the folder (ca.srl is a counter and is replaced as it grows).
+# SERVER_SHOWN: the names the server certificate really holds, for the summary.
 plan_outputs() {
     local f name has_key=false has_crt=false conflict=false
     CA_NEW=false
@@ -822,6 +882,9 @@ plan_outputs() {
     if [ -e "$CERTS_DIR/ca.crt" ]; then has_crt=true; fi
     if [ "$has_key" != "$has_crt" ]; then
         die "$CERTS_DIR has only one of ca.key and ca.crt, so the CA cannot be used or rebuilt; restore the missing file or empty the folder (--force does not apply)"
+    fi
+    if [ "$has_key" = true ]; then
+        check_key_private "$CERTS_DIR/ca.key"
     fi
     if [ "$has_key" = false ]; then
         CA_NEW=true
@@ -857,6 +920,20 @@ plan_outputs() {
         done
         if [ "$conflict" = true ]; then
             exit 1
+        fi
+    fi
+    SERVER_SHOWN=("${DOMAINS[@]}")
+    if [ "$SERVER_NEW" = false ]; then
+        check_key_private "$CERTS_DIR/${SERVER_CERT_NAME}.key"
+        check_server_pair
+        read_server_names "$CERTS_DIR/${SERVER_CERT_NAME}.crt"
+        SERVER_SHOWN=("${SERVER_NAMES[@]+"${SERVER_NAMES[@]}"}")
+        if [ ${#SERVER_SHOWN[@]} -eq 0 ]; then SERVER_SHOWN=("(no names)"); fi
+        if ! server_names_match; then
+            if [ "$SERVER_ONLY" = true ]; then
+                die "$CERTS_DIR/${SERVER_CERT_NAME}.crt already exists for the names ${SERVER_SHOWN[*]}, not the requested ${DOMAINS[*]}, so --server-only would make nothing; use --force to replace it"
+            fi
+            echo "Warning: the existing server certificate $CERTS_DIR/${SERVER_CERT_NAME}.crt is for the names ${SERVER_SHOWN[*]}, not the requested ${DOMAINS[*]}; it is reused as it is (use --force to make one for these names)" >&2
         fi
     fi
 }
@@ -922,6 +999,18 @@ commit_staged() {
         place_file "$f"
     done
     COMMITTING=false
+}
+
+# Keys private, certificates and bundles readable, whatever the umask.
+set_stage_modes() {
+    local -a keys crts
+    STEP="set file permissions"
+    shopt -s nullglob
+    keys=("$STAGE"/*.key)
+    crts=("$STAGE"/*.crt "$STAGE"/*.p12)
+    shopt -u nullglob
+    if [ ${#keys[@]} -gt 0 ]; then chmod 600 "${keys[@]}"; fi
+    if [ ${#crts[@]} -gt 0 ]; then chmod 644 "${crts[@]}"; fi
 }
 
 CA_KEY="$CERTS_DIR/ca.key"
@@ -1041,6 +1130,7 @@ fi
 
 # If server-only mode, exit here without generating client certificate
 if [ "$SERVER_ONLY" = true ]; then
+    set_stage_modes
     commit_staged
     STEP="print summary"
     echo ""
@@ -1055,13 +1145,13 @@ if [ "$SERVER_ONLY" = true ]; then
     echo "  City: $CITY"
     echo "  Organization: $ORG"
     echo "  CA subject: $CA_SUBJECT"
-    echo "  Domains: ${DOMAINS[*]}"
+    echo "  Domains: ${SERVER_SHOWN[*]}"
     echo "  Valid for: $DAYS days"
     echo "  Key size: $KEY_SIZE bits"
     echo "  Output directory: $CERTS_DIR"
     echo ""
     echo "Test server certificate:"
-    echo "  curl --cacert $CERTS_DIR/ca.crt https://${DOMAINS[0]}/"
+    echo "  curl --cacert $CERTS_DIR/ca.crt https://${SERVER_SHOWN[0]}/"
     exit 0
 fi
 
@@ -1080,10 +1170,7 @@ openssl pkcs12 -export -out "$STAGE/${CLIENT_NAME}.p12" -inkey "$STAGE/${CLIENT_
 STEP="remove client request file"
 rm -- "${STAGE:?}/${CLIENT_NAME:?}.csr"
 
-STEP="set file permissions"
-chmod 600 "$STAGE"/*.key
-chmod 644 "$STAGE"/*.crt "$STAGE"/*.p12
-
+set_stage_modes
 commit_staged
 
 STEP="print summary"
@@ -1102,10 +1189,10 @@ echo "  City: $CITY"
 echo "  Organization: $ORG"
 echo "  CA subject: $CA_SUBJECT"
 echo "  Client Name: $CLIENT_NAME"
-echo "  Server Domains: ${DOMAINS[*]}"
+echo "  Server Domains: ${SERVER_SHOWN[*]}"
 echo "  Valid for: $DAYS days"
 echo "  Key size: $KEY_SIZE bits"
 echo "  Output directory: $CERTS_DIR"
 echo ""
 echo "Test with curl:"
-echo "  curl --cacert $CERTS_DIR/ca.crt --cert $CERTS_DIR/${CLIENT_NAME}.crt --key $CERTS_DIR/${CLIENT_NAME}.key https://${DOMAINS[0]}/"
+echo "  curl --cacert $CERTS_DIR/ca.crt --cert $CERTS_DIR/${CLIENT_NAME}.crt --key $CERTS_DIR/${CLIENT_NAME}.key https://${SERVER_SHOWN[0]}/"
