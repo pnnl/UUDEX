@@ -32,6 +32,29 @@ def load(relative: str) -> Doc:
     return yaml.safe_load((SERVER_DIR / relative).read_text())
 
 
+def fold_keys(node: Any, source: str) -> Any:
+    """Lower-case every mapping key, failing when two keys fold to the same name."""
+    if isinstance(node, dict):
+        folded: Doc = {}
+        for key, value in node.items():
+            name = key.lower() if isinstance(key, str) else key
+            assert name not in folded, f"{source}: keys differing only in case: {key!r}"
+            folded[name] = fold_keys(value, source)
+        return folded
+    if isinstance(node, list):
+        return [fold_keys(item, source) for item in node]
+    return node
+
+
+def load_traefik(relative: str) -> Doc:
+    """Read a Traefik file the way Traefik does: keys match case-insensitively and the
+    file is rendered as a Go template, so a template action can rewrite what YAML shows.
+    Every key in the result is lower case."""
+    text = (SERVER_DIR / relative).read_text()
+    assert "{{" not in text, f"{relative}: template syntax"
+    return fold_keys(yaml.safe_load(text), relative)
+
+
 @pytest.fixture(scope="module")
 def compose() -> Doc:
     return load("compose.yaml")
@@ -39,12 +62,12 @@ def compose() -> Doc:
 
 @pytest.fixture(scope="module")
 def dynamic() -> Doc:
-    return load("traefik/dynamic.yml")
+    return load_traefik("traefik/dynamic.yml")
 
 
 @pytest.fixture(scope="module")
 def static() -> Doc:
-    return load("traefik/traefik.yml")
+    return load_traefik("traefik/traefik.yml")
 
 
 def proxy_app_address(compose: Doc) -> str:
@@ -62,32 +85,40 @@ def mount_strings(service: Doc) -> list[str]:
     return found
 
 
-def test_every_router_carries_the_client_cert_middleware(dynamic):
-    assert not {"tcp", "udp"} & set(dynamic), "only HTTP routers may exist"
+def test_traefik_files_are_plain_yaml_with_no_case_duplicates():
+    for relative in ("traefik/dynamic.yml", "traefik/traefik.yml"):
+        assert load_traefik(relative), relative
+
+
+def test_every_router_carries_only_the_client_cert_middleware(dynamic):
+    assert set(dynamic) <= {"tls", "http"}, "only TLS options and HTTP routers may exist"
     routers = dynamic["http"]["routers"]
     assert routers
     for name, router in routers.items():
         assert "tls" in router, name
-        assert "client-cert" in router.get("middlewares", []), name
+        # Any other middleware could set the identity header the app believes.
+        assert router.get("middlewares") == ["client-cert"], name
+        assert router.get("entrypoints") == ["websecure"], name
         assert router.get("tls", {}).get("options", "default") == "default", name
-    assert dynamic["http"]["middlewares"]["client-cert"]["passTLSClientCert"]["pem"] is True
+    assert set(dynamic["http"]["middlewares"]) == {"client-cert"}
+    assert dynamic["http"]["middlewares"]["client-cert"]["passtlsclientcert"]["pem"] is True
 
 
 def test_every_client_must_present_a_certificate_from_the_mounted_ca(dynamic, compose):
     options = dynamic["tls"]["options"]["default"]
-    assert options["clientAuth"]["clientAuthType"] == "RequireAndVerifyClientCert"
-    assert options["clientAuth"]["caFiles"] == ["/certs/ca.crt"]
+    assert options["clientauth"]["clientauthtype"] == "RequireAndVerifyClientCert"
+    assert options["clientauth"]["cafiles"] == ["/certs/ca.crt"]
     targets = {v["target"] for v in compose["services"]["proxy"]["volumes"]}
     assert "/certs/ca.crt" in targets
-    assert options["sniStrict"] is True
+    assert options["snistrict"] is True
 
 
 def test_tls_floor_is_1_2_with_ecdhe_aead_suites_only(dynamic):
     options = dynamic["tls"]["options"]["default"]
-    version = int(options["minVersion"].removeprefix("VersionTLS"))
+    version = int(options["minversion"].removeprefix("VersionTLS"))
     assert version >= 12
     if version == 12:
-        suites = options["cipherSuites"]
+        suites = options["ciphersuites"]
         assert len(suites) == len(set(suites))
         assert set(suites) == TLS12_SUITES, suites
 
@@ -131,9 +162,34 @@ def test_every_proxy_bind_mount_is_read_only(compose):
         assert volume["bind"]["create_host_path"] is False, volume["target"]
 
 
-def test_static_config_enables_neither_the_api_nor_the_docker_provider(static):
-    assert "api" not in static
-    assert set(static["providers"]) == {"file"}
+def test_static_config_has_only_the_allowed_sections(static):
+    # No "api" section and no docker provider: neither may appear in any spelling.
+    allowed = {"global", "entrypoints", "ping", "providers", "log", "accesslog"}
+    assert set(static) <= allowed
+
+
+def test_static_providers_are_exactly_the_one_file_provider(static):
+    providers = static["providers"]
+    assert set(providers) == {"file"}
+    assert set(providers["file"]) == {"filename"}
+
+
+def test_static_entrypoints_are_the_tls_listener_and_a_loopback_ping(static):
+    entrypoints = static["entrypoints"]
+    assert set(entrypoints) == {"websecure", "ping"}
+    host = entrypoints["ping"]["address"].rpartition(":")[0]
+    assert ip_address(host).is_loopback
+
+
+def test_no_entrypoint_trusts_forwarded_headers_or_proxy_protocol(static):
+    def names(node: Any) -> set[str]:
+        if isinstance(node, dict):
+            return set(node) | {name for value in node.values() for name in names(value)}
+        if isinstance(node, list):
+            return {name for item in node for name in names(item)}
+        return set()
+
+    assert not {"forwardedheaders", "proxyprotocol"} & names(static["entrypoints"])
 
 
 def test_proxy_cannot_enable_the_api_or_docker_provider_from_compose(compose):
@@ -143,8 +199,8 @@ def test_proxy_cannot_enable_the_api_or_docker_provider_from_compose(compose):
 
 
 def test_access_log_drops_request_headers(static):
-    headers = static["accessLog"]["fields"]["headers"]
-    assert headers["defaultMode"] == "drop"
+    headers = static["accesslog"]["fields"]["headers"]
+    assert headers["defaultmode"] == "drop"
     assert "keep" not in set(headers.get("names", {}).values())
 
 
