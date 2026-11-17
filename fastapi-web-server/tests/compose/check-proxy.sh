@@ -15,7 +15,7 @@
 #   client-cn        a client whose CN names an active endpoint (default: alice)
 # Run it on the Docker host, from a checkout: the mount sources must be readable here.
 # Needs curl, openssl, docker and git, plus GNU coreutils (timeout, cmp, realpath, mktemp,
-# sort, comm, head, tail, tr, wc) and sed and /usr/bin/grep; no root, no ca.key.
+# sort, comm, head, tail, tr, wc, dirname, rm) and sed and /usr/bin/grep; no root, no ca.key.
 # Exit status: 0 when every check passes, 1 when any fails, 2 on a usage or precondition error.
 set -euo pipefail
 
@@ -87,7 +87,7 @@ service_container() {
 preflight() {
   [ -n "$CERTS" ] && [ -n "$PROJECT" ] || die "usage: check-proxy.sh <certs-dir> <compose-project> [client-cn]"
   local c line
-  for c in curl openssl docker git timeout cmp realpath mktemp sed sort comm head tail tr wc; do
+  for c in curl openssl docker git timeout cmp realpath mktemp sed sort comm head tail tr wc dirname rm; do
     command -v "$c" >/dev/null 2>&1 || die "$c is required and not on PATH"
   done
   [ -x /usr/bin/grep ] || die "/usr/bin/grep is required"
@@ -136,7 +136,7 @@ make_rogue() {
 }
 
 # base64 of the DER certificate, the form the proxy puts in X-Forwarded-Tls-Client-Cert.
-der_b64() { ossl x509 -in "$1" -outform DER | openssl base64 -A; }
+der_b64() { ossl x509 -in "$1" -outform DER | ossl base64 -A; }
 
 # Valid client over a route: prints the status code on line 1 and the body after it.
 valid_get() {
