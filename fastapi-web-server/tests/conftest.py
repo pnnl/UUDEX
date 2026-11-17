@@ -1,7 +1,6 @@
 import base64
 import datetime
 import functools
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
