@@ -1638,6 +1638,89 @@ assert_signal_during_move_rolled_back() {
     assert_signal_during_move_rolled_back HUP 129
 }
 
+# A mv that runs the real one and sends signal $1 to the script when it moves
+# a staged localhost.key into place, and signal $2 after the first restore from
+# the .old folder. Used to send a second signal while the rollback is running.
+stub_mv_two_signals() {
+    local real
+    real=$(command -v mv)
+    MVBIN="$TT/mvbin"
+    mkdir -p "$MVBIN"
+    cat > "$MVBIN/mv" <<STUBEOF
+#!/bin/bash
+if [[ "\$*" =~ \.staging\.[[:alnum:]]{6}/localhost\.key ]]; then
+    $real "\$@"
+    kill -s $1 \$PPID
+    exit 0
+fi
+if [[ "\$*" =~ \.staging\.[[:alnum:]]{6}/\.old/ ]]; then
+    $real "\$@"
+    kill -s $2 \$PPID
+    exit 0
+fi
+exec $real "\$@"
+STUBEOF
+    chmod +x "$MVBIN/mv"
+}
+
+# $1 first signal, $2 second signal, $3 the exit status for the first one.
+assert_second_signal_during_rollback_ignored() {
+    cd "$WORKDIR" || return 1
+    local d="$TT/o" before modes out rc=0
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    modes=$(modes_of "$d")
+    stub_mv_two_signals "$1" "$2"
+    out=$(PATH="$MVBIN:$PATH" timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force 2>&1) || rc=$?
+    [ "$rc" -eq "$3" ] || { echo "status $rc: $out"; return 1; }
+    [[ "$out" == *"put back as they were: localhost.key localhost.crt"* ]] || { echo "$out"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    [ "$(modes_of "$d")" = "$modes" ]
+    same_pair "$d/localhost"
+    same_pair "$d/alice"
+    [ -z "$(ls -A "$d" | /usr/bin/grep '^\.staging\.' || true)" ]
+}
+
+@test "all or nothing: a second TERM during the rollback is ignored and every old file is still put back" {
+    assert_second_signal_during_rollback_ignored INT TERM 130
+}
+
+@test "all or nothing: a second INT during the rollback is ignored and every old file is still put back" {
+    assert_second_signal_during_rollback_ignored INT INT 130
+}
+
+# A mv that swaps the destination for a folder (after removing a file there)
+# just before the real move of a staged file matching $1. The file then lands
+# inside the folder, and the script finds no regular file at the destination.
+@test "a folder swapped in at the destination of a forced move: the old file stays in the kept staging folder, which the message names" {
+    cd "$WORKDIR"
+    local d="$TT/o" before stage out rc=0
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    stub_mv '\.staging\.[[:alnum:]]{6}/localhost\.key ' "rm -f '$d/localhost.key'; mkdir '$d/localhost.key'"
+    out=$(PATH="$MVBIN:$PATH" timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force 2>&1) || rc=$?
+    [ "$rc" -ne 0 ]
+    [[ "$out" == *"is not a regular file after the move"* ]] || { echo "$out"; return 1; }
+    stage=$(echo "$d"/.staging.*)
+    [ -d "$stage/.old" ] || { echo "$out"; return 1; }
+    [[ "$out" == *"left alone because a link or a folder is in their place: localhost.key"* ]] || { echo "$out"; return 1; }
+    [[ "$out" == *"the old files are kept in $stage/.old: "*"localhost.key"* ]] || { echo "$out"; return 1; }
+    [[ $'\n'"$before"$'\n' == *$'\n'"$(sha256sum < "$stage/.old/localhost.key" | cut -c1-64) localhost.key"$'\n'* ]] || { echo "the old key is not in .old"; return 1; }
+}
+
+@test "a folder swapped in at the destination of a plain move: the message is true, the new files are removed, and no staging folder is left" {
+    cd "$WORKDIR"
+    local d="$TT/o" out rc=0
+    make_full_set "$d"
+    stub_mv '\.staging\.[[:alnum:]]{6}/bob\.key ' "mkdir '$d/bob.key'"
+    out=$(PATH="$MVBIN:$PATH" timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d" 2>&1) || rc=$?
+    [ "$rc" -ne 0 ]
+    [[ "$out" == *"is not a regular file after the move"* ]] || { echo "$out"; return 1; }
+    [[ "$out" == *"removed because this run made them: bob.crt"* ]] || { echo "$out"; return 1; }
+    [[ "$out" != *"could not be fully undone"* ]] || { echo "$out"; return 1; }
+    [ -z "$(ls -A "$d" | /usr/bin/grep '^\.staging\.' || true)" ]
+}
+
 @test "all or nothing: when a file cannot be put back the staging folder and the old files are kept and named, and the run fails" {
     cd "$WORKDIR"
     local d="$TT/o" before stage name
