@@ -39,9 +39,10 @@ in_list() {
 rollback_commit() {
     local i name dest old msg restored=() removed=() stuck=() refused=() kept=()
     [ "$COMMITTING" = true ] || return 0
-    COMMITTING=false
-    # A signal during the rollback would run cleanup again and delete the copies.
+    # Ignored first: a signal between the two lines would run cleanup with
+    # COMMITTING already false, skip this rollback and delete the copies.
     trap '' INT TERM HUP
+    COMMITTING=false
     # Bash runs a signal trap only after the running mv returns, so the file
     # being moved may already be in place without being in PLACED: the staged
     # source being gone says the move happened.
