@@ -1216,7 +1216,7 @@ assert_refusal_changes_nothing() {
 
 @test "existing files: --force replaces the client files with new ones signed by the same CA, and leaves the CA alone" {
     cd "$WORKDIR"
-    local d="$TT/o" ca_before key_before
+    local d="$TT/o" ca_before key_before left
     make_full_set "$d"
     ca_before=$(sha256sum < "$d/ca.key")$(sha256sum < "$d/ca.crt")
     key_before=$(sha256sum < "$d/alice.key")
@@ -1227,7 +1227,10 @@ assert_refusal_changes_nothing() {
     run openssl verify -CAfile "$d/ca.crt" "$d/alice.crt"
     [ "$status" -eq 0 ]
     [ "$(openssl x509 -in "$d/alice.crt" -noout -pubkey)" = "$(openssl pkey -in "$d/alice.key" -pubout)" ]
-    [ -z "$(ls -A "$d" | /usr/bin/grep staging)" ]
+    shopt -s nullglob dotglob
+    left=("$d"/.staging.*)
+    shopt -u nullglob dotglob
+    [ "${#left[@]}" -eq 0 ]
 }
 
 @test "existing files: a forced run that fails at the client certificate keeps the old key, certificate and bundle byte for byte" {
