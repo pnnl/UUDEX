@@ -171,6 +171,20 @@ refuse_tls() {
   fi
 }
 
+# The proxy trusts every certificate in ca.crt, and the server does not check the issuer, so a
+# second CA in the file lets its clients in under any name. This is a property of the stack, so
+# it is a check that fails (exit 1), not a usage error. check_mounts shows the proxy mounts
+# this very file.
+check_ca_bundle() {
+  local msg="ca.crt holds exactly one certificate" n
+  n=$(/usr/bin/grep -c '^-----BEGIN [A-Z0-9 ]*CERTIFICATE-----' "$CERTS/ca.crt" || true)
+  if [ "$n" -eq 1 ]; then
+    pass "$msg"
+  else
+    fail "$msg (found $n in $CERTS/ca.crt)"
+  fi
+}
+
 check_refusals() {
   refuse_tls "no client certificate is refused" --cacert "$CERTS/ca.crt" "$URL/"
   refuse_tls "certificate from a second CA is refused" --cacert "$CERTS/ca.crt" \
@@ -414,6 +428,7 @@ main() {
   preflight
   make_rogue || die "cannot make the second CA and its client certificate with openssl"
   check_valid_client
+  check_ca_bundle
   check_refusals
   check_tls11
   check_server_direct
