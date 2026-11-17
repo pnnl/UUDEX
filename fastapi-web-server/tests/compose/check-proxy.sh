@@ -298,23 +298,31 @@ check_published_ports() {
   fi
 }
 
-# Both Traefik files the running proxy has mounted are byte-identical to the ones committed
-# at HEAD. This also catches a host edit made after the proxy started, since Traefik reloads
-# the file provider live.
+# Both Traefik files are byte-identical to the ones committed at HEAD, on the host and as the
+# proxy itself reads them. A single-file bind mount pins the file the proxy started with: a
+# host file replaced afterwards (git checkout, an editor's save) is a new file the proxy never
+# sees, so the host copy alone can match HEAD while the proxy runs something else. The copy
+# read inside the container is the one the proxy holds. (docker cp is no substitute: it
+# reads the host path.) Needs check_mounts to have run first, since that sets the sources.
 check_committed_config() {
-  local name src
+  local name src msg
   for name in traefik.yml dynamic.yml; do
     if [ "$name" = traefik.yml ]; then src=$STATIC_SRC; else src=$DYNAMIC_SRC; fi
+    msg="mounted $name is identical to the committed file"
     git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}traefik/$name" >"$TMP/head-$name" \
       || die "traefik/$name is not committed at HEAD"
     if [ -z "$src" ]; then
-      fail "mounted $name is identical to the committed file (no mount found for it)"
+      fail "$msg (no mount found for it)"
     elif [ ! -r "$src" ]; then
       die "mount source $src of $name is not readable on this host"
-    elif cmp -s "$src" "$TMP/head-$name"; then
-      pass "mounted $name is identical to the committed file"
-    else
+    elif ! cmp -s "$src" "$TMP/head-$name"; then
       fail "mounted $name differs from the committed file (source $src)"
+    elif ! dk exec "$PROXY" cat "/etc/traefik/$name" >"$TMP/run-$name" 2>/dev/null; then
+      fail "$msg (cannot read /etc/traefik/$name inside the proxy)"
+    elif cmp -s "$TMP/run-$name" "$TMP/head-$name"; then
+      pass "$msg"
+    else
+      fail "$msg (the host file matches HEAD but the proxy holds other bytes: it was replaced after the proxy started; recreate the proxy)"
     fi
   done
 }
