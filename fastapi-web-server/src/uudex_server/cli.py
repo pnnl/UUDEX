@@ -90,7 +90,7 @@ async def bootstrap_admin(cn: str, participant_id: int, progress: Progress | Non
             # the checks, so take it now. A waiting run gives up after the driver's timeout.
             await session.execute(text("BEGIN IMMEDIATE"))
         elif dialect == "postgresql":
-            # UNVERIFIED (#39): no test runs this branch; there is no PostgreSQL test setup yet.
+            # NOT OBSERVED (#39): checked by hand once on PostgreSQL 17; no test runs this branch.
             # READ COMMITTED gives the checks a fresh snapshot after the lock wait, so they see
             # the first run's row; REPEATABLE READ would keep a snapshot taken before the wait.
             await session.execute(text("SET TRANSACTION ISOLATION LEVEL READ COMMITTED"))

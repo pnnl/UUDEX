@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 from uudex_server.models import EndPoint
+from uudex_server.models.common_types import YNSwitch
 from uudex_server.repos import Repository
 
 
@@ -34,12 +35,13 @@ class EndpointRepository(Repository[EndPoint]):
     async def has_any_admin_endpoints(self) -> bool:
         """True when at least one active endpoint is a UUDEX administrator.
 
-        The switches are compared in upper case, as login does, so a row that can log in as an
-        active administrator is never missed here.
+        The active switch is a plain string compared in upper case, as login does, so a row that
+        can log in as an active administrator is never missed. The administrator switch is an
+        enum column that holds only Y or N, and PostgreSQL has no upper() for an enum.
         """
         statement = select(
             exists().where(
-                func.upper(EndPoint.uudex_administrator_sw) == "Y",
+                EndPoint.uudex_administrator_sw == YNSwitch.Y,
                 func.upper(EndPoint.active_sw) == "Y",
             )
         )
