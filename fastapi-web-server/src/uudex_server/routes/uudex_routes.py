@@ -7,7 +7,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
-from uudex_server.core.dependencies import CurrentUserDep, SessionDep, UserDep
+from uudex_server.core.dependencies import CurrentUserDep, SessionDep, UserDep, get_admin_user
 from uudex_server.models import (
     BulkCertificateOperation,
     BulkCertificateResult,
@@ -84,38 +84,17 @@ async def get_endpoint_by_id(endpoint_id: int, session: SessionDep, user: UserDe
     return endpoint
 
 
-@endpoint_router.post("/", operation_id="create_endpoint")
+@endpoint_router.post("/", operation_id="create_endpoint", dependencies=[Depends(get_admin_user)])
 async def create_endpoint(
     endpoint_create: EndPointCreate,
     session: SessionDep,
-    user: UserDep | None = Depends(lambda: None),
 ) -> EndPoint:
     """
-    Create a new endpoint.
+    Create a new endpoint. Only UUDEX administrators may call this.
 
-    Authorization rules:
-    - If no endpoints exist in the system, the first endpoint automatically becomes a UUDEX administrator
-    - If endpoints exist but no admins exist, the new endpoint becomes a UUDEX administrator
-    - Otherwise, only UUDEX administrators can create new endpoints
+    The first administrator is not created here: no caller can exist before one does.
     """
     repo = EndpointRepository(session)
-
-    # Check if this is the first endpoint or if no admins exist
-    endpoint_count = await repo.count_endpoints()
-    has_admin = await repo.has_any_admin_endpoints()
-
-    is_first_endpoint = endpoint_count == 0
-    needs_admin = not has_admin
-
-    # Authorization check - allow creation if:
-    # 1. This is the first endpoint (bootstrap case)
-    # 2. No admin exists (recovery case)
-    # 3. User is an authenticated admin
-    if not (is_first_endpoint or needs_admin) and (user is None or not user.is_admin()):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only UUDEX administrators can create endpoints",
-        )
 
     # Check if certificate DN already exists
     if endpoint_create.certificate_dn:
@@ -131,11 +110,6 @@ async def create_endpoint(
     # Auto-generate UUID if not provided
     if not endpoint_create.endpoint_uuid:
         endpoint_create.endpoint_uuid = str(uuid.uuid4())
-
-    # If this is the first endpoint or no admin exists, make it a UUDEX administrator
-    if is_first_endpoint or needs_admin:
-        endpoint_create.uudex_administrator_sw = "Y"
-        endpoint_create.participant_administrator_sw = "Y"
 
     # Convert to database model and create
     db_endpoint = EndPoint(**endpoint_create.model_dump())
