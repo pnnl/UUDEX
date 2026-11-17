@@ -111,19 +111,32 @@ changes nothing. Each message names the file or folder.
 
 - A client that already has `<name>.key`, `.crt` or `.p12`, and a
   `ca-trusted.crt` that is not a copy of `ca.crt`. `--force` replaces them: the
-  new files are built beside the old ones and renamed over them, so a run that
-  fails keeps the old files.
+  new files are built beside the old ones and renamed over them. If the move
+  fails part-way, the files already moved are put back and the message names
+  them, so the folder is as it was. Only a `kill -9` during the move can leave
+  a mixed set, and then the `.staging.*` folder holds the old files.
 - Only one of `ca.key` and `ca.crt`, or a certificate with no CA. Restore the
   CA or empty the folder; `--force` does not apply. A complete CA is reused and
   never replaced.
 - A server key without its certificate, or the reverse (without `--force`). A
   complete server certificate is reused, so a second client does not replace it;
-  use `--force` to make one for new `--domain` values.
+  use `--force` to make one for new `--domain` values. A reused key must match
+  its certificate. `--server-only` with names that differ from the existing
+  certificate is refused; a client run warns, and both summaries list the
+  names the certificate really has.
+- A reused `ca.key` or server key that the group or others can read or change.
+  Run `chmod 600` on it.
 - A symbolic link, a directory, a pipe or a file owned by someone else in the
   output folder. The output folder itself may not be a link. A link in a parent
   is followed and the real parents are checked.
 - A non-empty folder without the `.uudex-certs` marker, which the script writes
-  when it makes a folder. An empty folder you made yourself is accepted and marked.
+  when it makes a folder. An empty folder you made yourself is accepted and
+  marked. A folder made by an older version of this script, or by the postgres
+  script, has no marker either: check its CA and certificates, then create an
+  empty file named `.uudex-certs` in it. Do not make a new CA beside them.
+- A `.staging.*` folder, left by a run that was killed (or one still going).
+  Check the keys and certificates are a matching set, then delete it with
+  `rm -r`.
 - Any parent of the output folder, up to `/`, that the group or others can write
   (sticky or not) or that is owned by neither you nor root. `/tmp/certs` is
   refused for this reason.
@@ -174,4 +187,4 @@ curl --cacert ~/.config/uudex/tls/ca.crt \
 
 ## Tests
 
-Run `bats infrastructure/certs/tests/certs.bats` from the repository root (needs `bats` and `openssl`).
+Run `bats infrastructure/certs/tests/certs.bats` from the repository root (needs `bats` and `openssl`). The tests make `.uudex-certs-bats.*` folders under `$HOME` and remove them afterwards.
