@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 import subprocess
 import sys
 import uuid
@@ -13,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import SQLModel, select
 
 import uudex_server.models as m
+from uudex_server import cli
 from uudex_server.cli import Refused, check_common_name
 
 SECRET = "topsecretpw"
@@ -132,14 +134,16 @@ def settings_env(dsn: str) -> dict[str, str]:
     }
 
 
-def run_command(dsn: str, *args: str) -> subprocess.CompletedProcess[str]:
+def run_command(
+    dsn: str, *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     """Run the console script as an operator would, with only the settings it needs."""
     assert CONSOLE_SCRIPT.exists(), f"console script not installed: {CONSOLE_SCRIPT}"
     return subprocess.run(
         [str(CONSOLE_SCRIPT), "bootstrap-admin", *args],
         capture_output=True,
         text=True,
-        env=settings_env(dsn),
+        env=env or settings_env(dsn),
         cwd="/",
         timeout=120,
         check=False,
@@ -189,7 +193,8 @@ def test_first_run_creates_an_admin_and_the_second_run_refuses(db: Database) -> 
     first = run_command(db.dsn, "--cn", "first-admin", "--participant-id", str(participant_id))
 
     assert first.returncode == 0, first.stderr
-    assert first.stderr == ""
+    # Only the settings source is logged: a path, no secret.
+    assert first.stderr == f"uudex-server: Loading settings from: {os.environ['UUDEX_SETTINGS']}\n"
     rows = db.endpoints()
     assert len(rows) == 1
     row = rows[0]
@@ -324,16 +329,75 @@ def test_a_nul_in_the_common_name_is_refused() -> None:
         check_common_name("nul\x00byte")
 
 
+def assert_failed(result: subprocess.CompletedProcess[str], text: str, tail: str = "") -> None:
+    """The failure line is the fixed text plus an exception type name, and nothing else."""
+    assert result.returncode == 1
+    assert result.stdout == ""
+    *_, last = result.stderr.splitlines()
+    assert re.fullmatch(rf"uudex-server: failed: {re.escape(text)} \(\w+\){re.escape(tail)}", last)
+    assert result.stderr.count("failed") == 1
+    assert SECRET not in result.stdout + result.stderr
+
+
 def test_an_unreachable_database_fails_without_printing_the_secret() -> None:
     dsn = f"postgresql+asyncpg://user:{SECRET}@127.0.0.1:1/uudex"
 
     result = run_command(dsn, "--cn", "an-admin", "--participant-id", "1")
 
-    assert result.returncode == 1
-    assert result.stdout == ""
-    assert "failed" in result.stderr
-    assert "nothing was written" in result.stderr
-    assert SECRET not in result.stdout + result.stderr
+    assert_failed(result, "could not connect to the database; nothing was written")
+
+
+def test_a_malformed_dsn_is_a_connection_failure_that_does_not_print_it() -> None:
+    dsn = f"bogus://user:{SECRET}@host/db"
+
+    result = run_command(dsn, "--cn", "an-admin", "--participant-id", "1")
+
+    assert_failed(result, "could not connect to the database; nothing was written")
+
+
+def test_missing_tables_are_a_schema_failure(tmp_path: Path) -> None:
+    empty = Database(tmp_path / "no-tables.db")
+
+    result = run_command(empty.dsn, "--cn", "an-admin", "--participant-id", "1")
+
+    assert_failed(
+        result,
+        "could not read the existing endpoints and participant (is the schema created, is the "
+        "database locked?); nothing was written",
+    )
+
+
+def test_a_missing_setting_names_the_field_and_no_value(db: Database) -> None:
+    env = settings_env(db.dsn)
+    del env["POSTGRES_DSN"]
+
+    result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", "1", env=env)
+
+    assert_failed(
+        result,
+        "could not load the settings; nothing was written",
+        tail="; invalid or missing: postgres_dsn",
+    )
+    assert db.endpoints() == []
+
+
+def test_an_unparseable_setting_does_not_print_its_value(db: Database) -> None:
+    env = settings_env(db.dsn) | {"TRUSTED_PROXY_HOSTS": f"not-json-{SECRET}"}
+
+    result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", "1", env=env)
+
+    assert_failed(result, "could not load the settings; nothing was written")
+    assert db.endpoints() == []
+
+
+def test_a_failure_after_the_write_does_not_claim_nothing_was_written() -> None:
+    for stage in ("writing", "closing"):
+        message = cli._failure_message(RuntimeError(f"boom {SECRET}"), stage)
+
+        assert "nothing was written" not in message
+        assert "the outcome is unknown" in message
+        assert "certificate DN" in message
+        assert SECRET not in message
 
 
 def test_missing_arguments_are_a_usage_error(db: Database) -> None:
