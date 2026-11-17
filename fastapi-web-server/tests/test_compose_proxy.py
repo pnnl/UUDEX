@@ -32,11 +32,33 @@ def load(relative: str) -> Doc:
     return yaml.safe_load((SERVER_DIR / relative).read_text())
 
 
+class UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a key repeated in one mapping; PyYAML would keep the last."""
+
+    def construct_mapping(self, node: yaml.MappingNode, deep: bool = False) -> dict[Any, Any]:
+        # Taken before the parent merges "<<" entries in, so an override of a merged key is fine.
+        pairs = list(node.value)
+        mapping = super().construct_mapping(node, deep=deep)
+        seen: set[Any] = set()
+        for key_node, _ in pairs:
+            if key_node.tag == "tag:yaml.org,2002:merge":
+                continue
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise AssertionError(f"repeated key {ascii(key)}")
+            seen.add(key)
+        return mapping
+
+
 def fold_keys(node: Any, source: str) -> Any:
-    """Lower-case every mapping key, failing when two keys fold to the same name."""
+    """Lower-case every mapping key, failing when two keys fold to the same name.
+
+    Keys must be ASCII: Go folds some non-ASCII letters that Python's lower() leaves alone."""
     if isinstance(node, dict):
         folded: Doc = {}
         for key, value in node.items():
+            if isinstance(key, str):
+                assert key.isascii(), f"{source}: non-ASCII key {ascii(key)}"
             name = key.lower() if isinstance(key, str) else key
             assert name not in folded, f"{source}: keys differing only in case: {key!r}"
             folded[name] = fold_keys(value, source)
@@ -51,7 +73,12 @@ def parse_traefik(text: str, source: str) -> Doc:
     file is rendered as a Go template, so a template action can rewrite what YAML shows.
     Every key in the result is lower case."""
     assert "{{" not in text, f"{source}: template syntax"
-    return fold_keys(yaml.safe_load(text), source)
+    try:
+        document = yaml.load(text, Loader=UniqueKeyLoader)
+    except AssertionError as error:
+        raise AssertionError(f"{source}: {error}") from None
+    assert isinstance(document, dict), f"{source}: document is not a mapping"
+    return fold_keys(document, source)
 
 
 def load_traefik(relative: str) -> Doc:
@@ -101,6 +128,17 @@ HELPER_REFUSALS = [
     pytest.param("Routers: {}\nrouters: {}\n", "keys differing only in case", id="case-collision"),
     pytest.param("a:\n  - B: 1\n    b: 2\n", "keys differing only in case", id="case-in-list-item"),
     pytest.param("a: '{{ x }}'\n", "template syntax", id="template"),
+    # U+017F lower-cases to itself in Python but folds to "s" in Go.
+    pytest.param("router\u017f: {}\n", r"non-ASCII key 'router\\u017f'", id="non-ascii-key"),
+    pytest.param("routers: {}\nrouters: {}\n", "repeated key 'routers'", id="repeated-key"),
+    pytest.param(
+        "http:\n  middlewares: []\n  middlewares: [x]\n",
+        "repeated key 'middlewares'",
+        id="repeated-nested-key",
+    ),
+    pytest.param("a:\n  - k: 1\n    k: 2\n", "repeated key 'k'", id="repeated-key-in-list-item"),
+    pytest.param("- a\n- b\n", "document is not a mapping", id="list-document"),
+    pytest.param("", "document is not a mapping", id="empty-document"),
 ]
 
 
@@ -113,6 +151,11 @@ def test_traefik_parser_refuses_ambiguous_files(text, message):
 def test_traefik_parser_lowers_every_key_through_lists():
     parsed = parse_traefik("Http:\n  List:\n    - Inner: 1\n", "sample.yml")
     assert parsed == {"http": {"list": [{"inner": 1}]}}
+
+
+def test_traefik_parser_allows_a_key_that_overrides_a_merged_one():
+    parsed = parse_traefik("a: &x {k: 1}\nb:\n  <<: *x\n  k: 2\n", "sample.yml")
+    assert parsed["b"] == {"k": 2}
 
 
 def test_key_names_walks_nested_mappings_and_lists():
