@@ -72,22 +72,33 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
        export UUDEX_CERTS="$HOME/.config/uudex/tls"
        ../infrastructure/certs/generate-certs.sh alice --domain localhost
 
-5. In `.env.compose` set `UUDEX_CERTS_DIR` to that folder, and `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` to the owner of `localhost.key` (`id -u`, `id -g`). The proxy mounts only `ca.crt`, `localhost.crt` and `localhost.key`, read-only; `ca.key` is never mounted. Add the client to the database as an endpoint; no admin route does that yet.
-6. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops:
+5. In `.env.compose` set `UUDEX_CERTS_DIR` to that folder, and `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` to the owner of `localhost.key` (`id -u`, `id -g`). The proxy mounts only `ca.crt`, `localhost.crt` and `localhost.key`, read-only; `ca.key` is never mounted.
+6. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops. "Healthy" is a weak signal: for the proxy it means only that the process answers its ping, and for the server only that it answers HTTP on `/openapi.json`. A proxy that cannot read its key, or that failed to load `traefik/dynamic.yml`, can still report healthy while it refuses every client, so always run the checks in step 8.
 
        docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
        docker compose --env-file .env.compose down
 
-7. Try it. The proxy listens on `127.0.0.1:8443` and refuses any client without a certificate signed by `ca.crt`, at the TLS handshake (no HTTP status). `UUDEX_PROXY_BIND` changes the address; leave it on loopback unless clients must reach the proxy from other machines.
+7. Add the client to the database. Identity comes from the certificate, but the server also needs an endpoint row for it, and no admin route creates one yet. Open `psql` in the running database (the same command as under the password notes below), then insert a participant and an endpoint whose `certificate_dn` is the certificate's common name:
+
+       insert into participant (active_sw, participant_uuid, participant_short_name, participant_long_name, root_org_sw)
+         values ('Y', 'p-0001', 'org', 'Organization', 'Y');
+       insert into endpoint (active_sw, endpoint_uuid, endpoint_user_name, certificate_dn, description,
+           uudex_administrator_sw, participant_administrator_sw, participant_id)
+         select 'Y', 'e-alice-0001', 'alice', 'alice', 'local development client', 'N', 'N', participant_id
+         from participant where participant_uuid = 'p-0001';
+
+8. Check it. The proxy listens on `127.0.0.1:8443`. `UUDEX_PROXY_BIND` changes the address; leave it on loopback unless clients must reach the proxy from other machines. Run the first check before the others: it shows that a valid client gets through on this port, so a failure in the next two means the certificate was refused and not that the stack is down or the port is wrong. The proxy refuses at the TLS handshake, so there is no HTTP status for the refused ones; each ends with the error shown.
 
        C="$UUDEX_CERTS"
-       curl --cacert $C/ca.crt https://localhost:8443/                  # fails: certificate required
-       curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: bad certificate
-       curl --cacert $C/ca.crt --cert $C/alice.crt --key $C/alice.key https://localhost:8443/endpoint/me   # 200 for a seeded endpoint
+       curl --cacert $C/ca.crt --cert $C/alice.crt --key $C/alice.key https://localhost:8443/endpoint/me   # 200, with `e-alice-0001` in the body
+       curl --cacert $C/ca.crt https://localhost:8443/                  # fails: "tlsv13 alert certificate required"
+       curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: "ssl/tls alert bad certificate"
+
+   The proxy accepts TLS 1.2 and 1.3. TLS 1.2 is limited to ECDHE with AES-GCM or ChaCha20, so older CBC and SHA-1 suites are refused. It logs one line per request on stdout (`docker compose logs proxy`); request headers, including the forwarded certificate, are not logged.
 
 The proxy is the only way in: it has one router, and that router adds the verified certificate as `X-Forwarded-Tls-Client-Cert`, replacing anything the client sent. Any router you add to `traefik/dynamic.yml` that reaches the server must carry the `client-cert` middleware, because the server does not verify signatures. Do not mount the Docker socket or enable the Traefik API or dashboard.
 
-The database and the proxy have pinned images, memory limits and healthchecks, and each service waits for the one before it. The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal. The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443. The server trusts the client-certificate header only from the proxy's fixed address, 172.29.77.20 (`TRUSTED_PROXY_HOSTS`). The `app` network hands out dynamic addresses only from 172.29.77.128/25, so another container cannot take .10 or .20 while the proxy is down. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`: seven places in all. The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+The database and the proxy have pinned images, memory limits and healthchecks, and each service waits for the one before it. The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal. The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443. The server trusts the client-certificate header only from the proxy's fixed address, 172.29.77.20 (`TRUSTED_PROXY_HOSTS`). The `app` network hands out dynamic addresses only from 172.29.77.128/25, so Docker gives neither .10 nor .20 to another container on its own. Anyone who controls Docker can still start a container at .20, so keep Docker access limited to people you trust with the server. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`. `tests/test_compose_proxy.py` checks that these agree. The commented `TRUSTED_PROXY_HOSTS` example in `.env.example` is illustrative and is not read by compose. The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
 
 The database password takes effect only when the `db_data` volume is first created. Editing `compose_postgres_password` later does not change the role's password; the old one keeps working. To change it, open `psql` in the running database and use `\password`, which prompts for the new password so it never appears on a command line or in your shell history:
 
