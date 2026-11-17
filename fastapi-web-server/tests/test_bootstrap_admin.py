@@ -47,14 +47,14 @@ class Database:
 
         asyncio.run(go())
 
-    def add_participant(self, *, active: bool = True) -> int:
+    def add_participant(self, *, active: bool = True, active_sw: str | None = None) -> int:
         async def work(session: AsyncSession) -> int:
             participant = m.Participant(
                 participant_uuid=str(uuid.uuid4()),
                 participant_short_name="p",
                 participant_long_name="p",
                 root_org_sw="N",
-                active_sw="Y" if active else "N",
+                active_sw=active_sw or ("Y" if active else "N"),
                 create_datetime=None,
             )
             session.add(participant)
@@ -63,7 +63,17 @@ class Database:
 
         return self.run(work)
 
-    def add_endpoint(self, cn: str, participant_id: int, *, admin: bool, active: bool = True):
+    def add_endpoint(
+        self,
+        cn: str,
+        participant_id: int,
+        *,
+        admin: bool,
+        active: bool = True,
+        active_sw: str | None = None,
+    ):
+        """Seed an endpoint; active_sw stores exactly that text when given."""
+
         async def work(session: AsyncSession) -> None:
             session.add(
                 m.EndPoint(
@@ -73,7 +83,7 @@ class Database:
                     description="seeded",
                     uudex_administrator_sw="Y" if admin else "N",
                     participant_administrator_sw="Y" if admin else "N",
-                    active_sw="Y" if active else "N",
+                    active_sw=active_sw or ("Y" if active else "N"),
                     participant_id=participant_id,
                     create_datetime=None,
                 )
@@ -196,6 +206,38 @@ def test_refuses_when_an_active_admin_was_seeded_directly(db: Database) -> None:
 
     assert_refused(result, "an active administrator already exists")
     assert [e.endpoint_uuid for e in db.endpoints()] == before
+
+
+def test_refuses_when_the_active_switch_is_lower_case(db: Database) -> None:
+    # Login compares the switch case-insensitively, so this admin can log in. The admin switch
+    # is an enum column that stores only Y or N, so only the active switch can differ in case.
+    participant_id = db.add_participant()
+    db.add_endpoint("lower-admin", participant_id, admin=True, active_sw="y")
+    before = [e.endpoint_uuid for e in db.endpoints()]
+
+    result = run_command(db.dsn, "--cn", "other", "--participant-id", str(participant_id))
+
+    assert_refused(result, "an active administrator already exists")
+    assert [e.endpoint_uuid for e in db.endpoints()] == before
+
+
+def test_a_lower_case_inactive_admin_does_not_block_the_first_active_one(db: Database) -> None:
+    participant_id = db.add_participant()
+    db.add_endpoint("retired", participant_id, admin=True, active_sw="n")
+
+    result = run_command(db.dsn, "--cn", "new-admin", "--participant-id", str(participant_id))
+
+    assert result.returncode == 0, result.stderr
+    assert {e.certificate_dn for e in db.endpoints()} == {"retired", "new-admin"}
+
+
+def test_a_participant_whose_active_switch_is_lower_case_is_active(db: Database) -> None:
+    participant_id = db.add_participant(active_sw="y")
+
+    result = run_command(db.dsn, "--cn", "an-admin", "--participant-id", str(participant_id))
+
+    assert result.returncode == 0, result.stderr
+    assert [e.certificate_dn for e in db.endpoints()] == ["an-admin"]
 
 
 @pytest.mark.parametrize("state", ["missing", "inactive"])

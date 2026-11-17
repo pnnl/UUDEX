@@ -58,7 +58,7 @@ async def bootstrap_admin(cn: str, participant_id: int) -> str:
         if await repo.has_any_admin_endpoints():
             raise Refused("an active administrator already exists")
         participant = await session.get(Participant, participant_id)
-        if participant is None or participant.active_sw != "Y":
+        if participant is None or participant.active_sw.upper() != "Y":
             raise Refused(f"participant {participant_id} does not exist or is not active")
         # No database constraint keeps certificate_dn unique yet (pnnl/UUDEX#46).
         if await repo.certificate_dn_exists(cn):

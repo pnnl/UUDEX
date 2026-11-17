@@ -1,4 +1,4 @@
-from sqlalchemy import exists
+from sqlalchemy import exists, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
@@ -32,9 +32,16 @@ class EndpointRepository(Repository[EndPoint]):
         return result.scalars().all()
 
     async def has_any_admin_endpoints(self) -> bool:
-        """True when at least one active endpoint is a UUDEX administrator."""
+        """True when at least one active endpoint is a UUDEX administrator.
+
+        The switches are compared in upper case, as login does, so a row that can log in as an
+        active administrator is never missed here.
+        """
         statement = select(
-            exists().where(EndPoint.uudex_administrator_sw == "Y", EndPoint.active_sw == "Y")
+            exists().where(
+                func.upper(EndPoint.uudex_administrator_sw) == "Y",
+                func.upper(EndPoint.active_sw) == "Y",
+            )
         )
         result = await self.session.execute(statement)
         return bool(result.scalar())
