@@ -105,6 +105,16 @@ def test_proxy_mounts_exactly_the_three_certificate_files(compose):
     assert sorted(volume["source"] for volume in volumes) == sorted(PROXY_CERT_FILES)
 
 
+def test_proxy_loads_the_config_files_these_tests_read(compose, static):
+    assert compose["configs"] == {
+        "traefik_static": {"file": "./traefik/traefik.yml"},
+        "traefik_dynamic": {"file": "./traefik/dynamic.yml"},
+    }
+    mounted = {c["source"]: c["target"] for c in compose["services"]["proxy"]["configs"]}
+    assert mounted["traefik_static"] == "/etc/traefik/traefik.yml"
+    assert static["providers"]["file"]["filename"] == mounted["traefik_dynamic"]
+
+
 def test_every_proxy_bind_mount_is_read_only(compose):
     volumes = compose["services"]["proxy"]["volumes"]
     assert volumes
