@@ -538,10 +538,10 @@ async def download_certificate(
 
         try:
             # Read certificate and key files
-            with open(files["crt"]) as cert_file:
+            with Path(files["crt"]).open() as cert_file:
                 cert_content = cert_file.read()
 
-            with open(files["key"]) as key_file:
+            with Path(files["key"]).open() as key_file:
                 key_content = key_file.read()
 
             # Create temporary combined file

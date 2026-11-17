@@ -73,8 +73,8 @@ async def dataset_definition_repo(
 # Certificate fixtures
 def read_cert_file(filename: str) -> str:
     """Read certificate from certs directory"""
-    cert_path = os.path.join("certs", filename)
-    with open(cert_path) as f:
+    cert_path = Path("certs") / filename
+    with cert_path.open() as f:
         return f.read().strip()
 
 

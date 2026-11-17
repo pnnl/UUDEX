@@ -52,7 +52,7 @@ settings = initialize_settings()
 logger.info("Settings initialized successfully")
 warn_if_no_trusted_proxies(settings.trusted_proxy_hosts)
 
-from uudex_server.routes import add_routers
+from uudex_server.routes import add_routers  # noqa: E402  (deliberately after settings init)
 
 
 @asynccontextmanager

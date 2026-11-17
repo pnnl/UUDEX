@@ -41,7 +41,10 @@ async def get_subscription_subjects(
 
 
 @subscriptions_router.get("/admin", operation_id="get_admin_subscriptions")
-async def get_admin_subscriptions(session: SessionDep, user: UserDep) -> list[Subscription]:
+async def get_admin_subscriptions(
+    session: SessionDep,
+    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
+) -> list[Subscription]:
     repo = ssr.SubscriptionRepository(session)
     return await repo.select_admin_subscriptions()
 
