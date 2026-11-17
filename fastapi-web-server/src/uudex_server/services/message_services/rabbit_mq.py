@@ -66,12 +66,10 @@ class RabbitMqService(UUDEXBrokerService):
 
     def create_subscription_subject(self, subscription_uuid, subject_uuid, subject_name, tag):
         queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
-        rc = self._client.create_queue(
-            "/", queue_name, auto_delete=False, durable=True, exclusive=False
-        )
+        self._client.create_queue("/", queue_name, auto_delete=False, durable=True, exclusive=False)
 
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        rc = self._client.create_binding("/", exchange_name, queue_name, "")
+        self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
 
@@ -115,7 +113,7 @@ class RabbitMqService(UUDEXBrokerService):
                 "/", queue_name, auto_delete=False, durable=True, exclusive=False
             )
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        rc = self._client.create_binding("/", exchange_name, queue_name, "")
+        self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
 

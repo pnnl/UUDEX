@@ -80,7 +80,7 @@ if __name__ == "__main__":
         from uudex_server.core.settings import get_settings
         from uudex_server.services.database_service import get_db_session
 
-        settings = get_settings(".env-develop")
+        get_settings(".env-develop")
         session = get_db_session()
         endpoints = select_all_subjects(session=session)
         print("LIST")
