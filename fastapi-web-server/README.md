@@ -52,7 +52,7 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
 
 ## Compose
 
-`compose.yaml` starts the server and PostgreSQL. The values in the example files are for local development only. They are not for real deployment.
+`compose.yaml` starts the server, PostgreSQL and a Traefik proxy that verifies client certificates. The values in the example files are for local development only. They are not for real deployment.
 
 1. Copy the examples (each secret is one file, mounted under `/run/secrets`; none goes in `environment:` or on a command line). Existing copies are kept, so it is safe to run this again:
 
@@ -67,12 +67,27 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
        chmod 0444 secrets/compose_*
        chmod 0700 secrets
 
-4. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops:
+4. Make the certificates, as the user who will run compose. The script writes to the folder in `UUDEX_CERTS` (or `-o`), never into this repository. `alice` is a client; `--domain localhost` makes the server certificate (`localhost.crt`, `localhost.key`):
+
+       export UUDEX_CERTS="$HOME/.config/uudex/tls"
+       ../infrastructure/certs/generate-certs.sh alice --domain localhost
+
+5. In `.env.compose` set `UUDEX_CERTS_DIR` to that folder, and `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` to the owner of `localhost.key` (`id -u`, `id -g`). The proxy mounts only `ca.crt`, `localhost.crt` and `localhost.key`, read-only; `ca.key` is never mounted. Add the client to the database as an endpoint; no admin route does that yet.
+6. Start and stop. `--wait` makes the command exit non-zero if a service is not healthy within 120 seconds; plain `up -d` exits 0 even when the server crash-loops:
 
        docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
        docker compose --env-file .env.compose down
 
-The database has a pinned image, a 512 MB limit and a healthcheck, and the server waits for it. The server publishes no port. It sits on the `app` network (for the verifying proxy, which a later change adds) and on the `db` network with PostgreSQL; both networks are internal. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change the subnet in `compose.yaml` together with `ipv4_address`, the `--host` address in the `command`, and the healthcheck URL: four places in all. The host can still reach the server's `app` address, so keep untrusted users off the host. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+7. Try it. The proxy listens on `127.0.0.1:8443` and refuses any client without a certificate signed by `ca.crt`, at the TLS handshake (no HTTP status). `UUDEX_PROXY_BIND` changes the address; leave it on loopback unless clients must reach the proxy from other machines.
+
+       C="$UUDEX_CERTS"
+       curl --cacert $C/ca.crt https://localhost:8443/                  # fails: certificate required
+       curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: bad certificate
+       curl --cacert $C/ca.crt --cert $C/alice.crt --key $C/alice.key https://localhost:8443/endpoint/me   # 200 for a seeded endpoint
+
+The proxy is the only way in: it has one router, and that router adds the verified certificate as `X-Forwarded-Tls-Client-Cert`, replacing anything the client sent. Any router you add to `traefik/dynamic.yml` that reaches the server must carry the `client-cert` middleware, because the server does not verify signatures. Do not mount the Docker socket or enable the Traefik API or dashboard.
+
+The database and the proxy have pinned images, memory limits and healthchecks, and each service waits for the one before it. The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal. The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443. The server trusts the client-certificate header only from the proxy's fixed address, 172.29.77.20 (`TRUSTED_PROXY_HOSTS`). The `app` network hands out dynamic addresses only from 172.29.77.128/25, so another container cannot take .10 or .20 while the proxy is down. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`: seven places in all. The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
 
 The database password takes effect only when the `db_data` volume is first created. Editing `compose_postgres_password` later does not change the role's password; the old one keeps working. To change it, open `psql` in the running database and use `\password`, which prompts for the new password so it never appears on a command line or in your shell history:
 
