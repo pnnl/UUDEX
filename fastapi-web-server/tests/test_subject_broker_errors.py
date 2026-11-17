@@ -220,6 +220,7 @@ class TestOtherHandlersLog:
             max_queue_size_kb=None,
             max_message_count=None,
             priority=None,
+            backing_exchange_name="e_subj_subj-uuid",
             owner_participant_id=1,
             dataset_definition_id=1,
         )
