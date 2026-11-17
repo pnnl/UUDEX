@@ -593,7 +593,9 @@ async def bulk_subject_operations(
 
         except Exception as e:
             # Wraps repository calls as well as the broker, so it cannot name BrokerError.
-            _log.exception("Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid)
+            _log.exception(
+                "Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid
+            )
             failed.append({"subject_uuid": subject_uuid, "error": str(e)})
 
     return BulkOperationResult(

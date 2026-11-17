@@ -217,6 +217,9 @@ class TestOtherHandlersLog:
             subscription_type="pull",
             fulfillment_types_available="immediate",
             full_queue_behavior="NO_CONSTRAINT",
+            max_queue_size_kb=None,
+            max_message_count=None,
+            priority=None,
             owner_participant_id=1,
             dataset_definition_id=1,
         )

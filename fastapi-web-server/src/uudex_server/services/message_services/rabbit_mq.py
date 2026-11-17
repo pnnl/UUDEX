@@ -64,6 +64,7 @@ def _raises_broker_error(method):
 
     return wrapper
 
+
 #
 # note: this interface  is in-flux as use cases mature
 #
