@@ -1,29 +1,39 @@
 #!/usr/bin/env bash
-# Checks that the compose stack's proxy is the only way in and verifies client certificates.
+# Checks that the compose stack's proxy is the committed one and the only way in, and that it
+# verifies client certificates. It compares the RUNNING proxy with HEAD (image, entrypoint,
+# command, environment, mounts, and the bytes of both Traefik files) and then tests behavior;
+# it does not parse any proxy config. The two Traefik files must be committed and clean.
 # Run it against a stack already started and seeded as described in README, "Compose".
 # It does not start, stop or seed anything and never writes to the database.
+#
+# Out of scope: someone with Docker access acting on purpose (they can start a container at
+# the proxy's address). This finds drift and mistakes, not an attacker with Docker.
 #
 # Usage: check-proxy.sh <certs-dir> <compose-project> [client-cn]
 #   certs-dir        folder from generate-certs.sh (ca.crt, <client>.crt, <client>.key, localhost.crt/.key)
 #   compose-project  the compose project name of the running stack
 #   client-cn        a client whose CN names an active endpoint (default: alice)
-# The port is read from the running proxy (docker port), not from a variable.
-# Needs curl, openssl and docker, plus the base tools awk, sed, sort, comm, readlink and
-# timeout; no root, no ca.key.
+# Run it on the Docker host, from a checkout: the mount sources must be readable here.
+# Needs curl, openssl, docker and git, plus GNU coreutils (timeout, cmp, realpath, mktemp,
+# sort, comm, head, tail, tr, wc) and sed and /usr/bin/grep; no root, no ca.key.
 # Exit status: 0 when every check passes, 1 when any fails, 2 on a usage or precondition error.
 set -euo pipefail
 
 CERTS=${1:-}
 PROJECT=${2:-}
 CLIENT=${3:-alice}
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# The folder holding compose.yaml and traefik/, two levels above this script.
+APP_DIR=$(cd "$SCRIPT_DIR/../.." && pwd)
 # Ports as the stack defines them: the proxy's own listener, the server, the Traefik API and
 # the proxy's ping listener inside the container.
 PROXY_CONTAINER_PORT=8443
 SERVER_PORT=8000
 TRAEFIK_API_PORT=8080
 PING_PORT=8082
-# Upper bound in seconds for every call that waits on the network.
+# Upper bound in seconds for every call that waits on the network, and for every docker call.
 NET_TIMEOUT=10
+DOCKER_TIMEOUT=30
 PORT=""
 URL=""
 # What a client sees when the proxy refuses it during the handshake. A connection that is
@@ -33,78 +43,106 @@ FAILED=0
 TMP=""
 CONTAINER=""
 PROXY=""
-STATIC=""
-DYNAMIC=""
+APP_NET=""
+PROXY_IP=""
+PORTS=""
+STATIC_SRC=""
+DYNAMIC_SRC=""
+GIT_PREFIX=""
+THROWAWAY_IMAGE=""
 
 die() { echo "error: $*" >&2; exit 2; }
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1"; FAILED=1; }
 
+# Every external call below goes through one of these, so a hung daemon, server or listener
+# ends as a failure after a bound and never as a hang. -k 5 follows up with KILL.
+dk() { timeout -k 5 "$DOCKER_TIMEOUT" docker "$@"; }
+curl_t() { timeout -k 5 $((NET_TIMEOUT + 5)) curl "$@"; }
+ossl() { timeout -k 5 30 openssl "$@"; }
+
 cleanup() {
   [ -z "$TMP" ] || rm -rf -- "$TMP"
   # The throwaway container normally removes itself (--rm), so "no such container" is the
   # expected failure here; a container left by an interrupted or timed-out run is removed.
-  [ -z "$CONTAINER" ] || docker rm -f "$CONTAINER" >/dev/null 2>&1 || true
+  # Its name is fixed in preflight because a $(...) call cannot hand a name back.
+  # This is a cleanup, not a read of state a check depends on.
+  [ -z "$CONTAINER" ] || dk rm -f "$CONTAINER" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Comments out of a config file, so a word in a comment never counts as a setting.
-strip_comments() { sed -e 's/^[[:space:]]*#.*$//' -e 's/[[:space:]]#.*$//'; }
+# The only running container of a compose service, or an error: a second one would make
+# every later check read the wrong container.
+service_container() {
+  local id
+  id=$(dk ps -q --filter "label=com.docker.compose.project=$PROJECT" \
+    --filter "label=com.docker.compose.service=$1") || die "cannot list the containers of project $PROJECT"
+  [ -n "$id" ] || die "no running $1 container for project $PROJECT"
+  [ "$(printf '%s\n' "$id" | wc -l)" -eq 1 ] || die "more than one $1 container for project $PROJECT"
+  printf '%s\n' "$id"
+}
 
 preflight() {
   [ -n "$CERTS" ] && [ -n "$PROJECT" ] || die "usage: check-proxy.sh <certs-dir> <compose-project> [client-cn]"
   local c line
-  for c in curl openssl docker timeout awk sed sort comm readlink; do
+  for c in curl openssl docker git timeout cmp realpath mktemp sed sort comm head tail tr wc; do
     command -v "$c" >/dev/null 2>&1 || die "$c is required and not on PATH"
   done
+  [ -x /usr/bin/grep ] || die "/usr/bin/grep is required"
+  # Mount sources are host paths; a remote daemon would show paths this host cannot read.
+  case "${DOCKER_HOST:-unix://}" in unix://*) ;; *) die "DOCKER_HOST is remote; run this on the Docker host" ;; esac
   for c in ca.crt localhost.crt localhost.key "$CLIENT.crt" "$CLIENT.key"; do
     [ -r "$CERTS/$c" ] || die "cannot read $CERTS/$c"
   done
   for c in ca.crt localhost.crt "$CLIENT.crt"; do
-    openssl x509 -in "$CERTS/$c" -noout >/dev/null 2>&1 || die "$CERTS/$c is not a readable certificate"
+    ossl x509 -in "$CERTS/$c" -noout >/dev/null 2>&1 || die "$CERTS/$c is not a readable certificate"
   done
-  timeout 20 docker info >/dev/null 2>&1 || die "the docker daemon does not answer"
-  PROXY=$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-    --filter "label=com.docker.compose.service=proxy") || die "cannot list the containers of project $PROJECT"
-  [ -n "$PROXY" ] || die "no running proxy container for project $PROJECT"
-  [ "$(printf '%s\n' "$PROXY" | wc -l)" -eq 1 ] || die "more than one proxy container for project $PROJECT"
-  # The first published address of the proxy's own port, for example 127.0.0.1:8443.
-  line=$(docker port "$PROXY" "$PROXY_CONTAINER_PORT/tcp") \
+  GIT_PREFIX=$(git -C "$APP_DIR" rev-parse --show-prefix) || die "$APP_DIR is not inside a git checkout"
+  git -C "$APP_DIR" rev-parse --verify --quiet HEAD >/dev/null || die "the checkout has no HEAD commit"
+  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
+  dk info >/dev/null 2>&1 || die "the docker daemon does not answer"
+  PROXY=$(service_container proxy)
+  # All published ports, for example "8443/tcp -> 127.0.0.1:8443".
+  PORTS=$(dk port "$PROXY") || die "cannot list the published ports of the proxy"
+  line=$(dk port "$PROXY" "$PROXY_CONTAINER_PORT/tcp") \
     || die "the proxy publishes no host port for $PROXY_CONTAINER_PORT/tcp"
   line=${line%%$'\n'*}
   PORT=${line##*:}
   case "$PORT" in '' | *[!0-9]*) die "cannot read a port from 'docker port': $line" ;; esac
   URL="https://localhost:$PORT"
-  STATIC=$(docker exec "$PROXY" cat /etc/traefik/traefik.yml | strip_comments) \
-    || die "cannot read /etc/traefik/traefik.yml in the proxy"
-  DYNAMIC=$(docker exec "$PROXY" cat /etc/traefik/dynamic.yml | strip_comments) \
-    || die "cannot read /etc/traefik/dynamic.yml in the proxy"
-  [ -n "$STATIC" ] && [ -n "$DYNAMIC" ] || die "a proxy config file is empty"
-  TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
+  APP_NET="${PROJECT}_app"
+  CONTAINER="${PROJECT}-check-$$"
+  PROXY_IP=$(dk inspect --format "{{(index .NetworkSettings.Networks \"$APP_NET\").IPAddress}}" "$PROXY") \
+    || die "cannot read the proxy address on $APP_NET"
+  [ -n "$PROXY_IP" ] || die "the proxy has no address on $APP_NET"
+  # The throwaway containers use an image the stack already pins by digest and has locally.
+  THROWAWAY_IMAGE=$(dk inspect --format '{{.Config.Image}}' "$(service_container db)") \
+    || die "cannot read the db image"
+  case "$THROWAWAY_IMAGE" in *@sha256:*) ;; *) die "the db image is not pinned by digest" ;; esac
 }
 
 # A second CA with a client certificate the real CA never signed.
 make_rogue() {
-  openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=RogueCA" \
+  ossl req -x509 -newkey rsa:2048 -nodes -days 1 -subj "/CN=RogueCA" \
     -keyout "$TMP/rogue-ca.key" -out "$TMP/rogue-ca.crt" 2>/dev/null || return 1
-  openssl req -newkey rsa:2048 -nodes -subj "/CN=bob" -keyout "$TMP/bob.key" \
+  ossl req -newkey rsa:2048 -nodes -subj "/CN=bob" -keyout "$TMP/bob.key" \
     -out "$TMP/bob.csr" 2>/dev/null || return 1
   printf 'extendedKeyUsage=clientAuth\n' >"$TMP/ext.cnf" || return 1
-  openssl x509 -req -in "$TMP/bob.csr" -CA "$TMP/rogue-ca.crt" -CAkey "$TMP/rogue-ca.key" \
+  ossl x509 -req -in "$TMP/bob.csr" -CA "$TMP/rogue-ca.crt" -CAkey "$TMP/rogue-ca.key" \
     -CAcreateserial -days 1 -extfile "$TMP/ext.cnf" -out "$TMP/bob.crt" 2>/dev/null || return 1
-  openssl x509 -in "$TMP/bob.crt" -noout >/dev/null 2>&1 || return 1
+  ossl x509 -in "$TMP/bob.crt" -noout >/dev/null 2>&1 || return 1
 }
 
 # base64 of the DER certificate, the form the proxy puts in X-Forwarded-Tls-Client-Cert.
-der_b64() { openssl x509 -in "$1" -outform DER | openssl base64 -A; }
+der_b64() { ossl x509 -in "$1" -outform DER | openssl base64 -A; }
 
 # Valid client over a route: prints the status code on line 1 and the body after it.
 valid_get() {
   # curl exits non-zero on a refusal or a timeout. Its message and the 000 status that
   # --write-out prints end up in the output, which the caller reads as "not 200".
-  curl --silent --show-error --max-time "$NET_TIMEOUT" --cacert "$CERTS/ca.crt" \
+  curl_t --silent --show-error --max-time "$NET_TIMEOUT" --cacert "$CERTS/ca.crt" \
     --cert "$CERTS/$CLIENT.crt" --key "$CERTS/$CLIENT.key" \
     --write-out '\n%{http_code}\n' "$@" 2>&1 || true
 }
@@ -123,7 +161,7 @@ refuse_tls() {
   local name=$1 err rc=0
   shift
   control_ok || { fail "$name (control: valid client did not get 200, stack is down or misconfigured)"; return; }
-  err=$(curl --silent --show-error --max-time "$NET_TIMEOUT" --output /dev/null "$@" 2>&1) || rc=$?
+  err=$(curl_t --silent --show-error --max-time "$NET_TIMEOUT" --output /dev/null "$@" 2>&1) || rc=$?
   if [ "$rc" -eq 0 ]; then
     fail "$name (handshake accepted)"
   elif printf '%s' "$err" | /usr/bin/grep -qE "$TLS_REFUSAL"; then
@@ -148,7 +186,7 @@ check_refusals() {
 
 # openssl s_client with a time limit; a listener that accepts and never answers ends as an
 # empty result after NET_TIMEOUT, never as a hang.
-s_client() { timeout "$NET_TIMEOUT" openssl s_client "$@" </dev/null 2>&1; }
+s_client() { timeout --foreground -k 5 "$NET_TIMEOUT" openssl s_client "$@" </dev/null 2>&1; }
 
 # TLS 1.1 goes through openssl: curl's own build may refuse to offer it, which would be
 # the client failing and not the proxy refusing.
@@ -170,6 +208,9 @@ check_tls11() {
   fi
 }
 
+# The proxy should replace whatever a client sends in the certificate header at the
+# entrypoint, so this cannot fail on its own today. It stays as defense in depth: it is the
+# check that notices if a later change lets a client-supplied header through.
 check_valid_client() {
   local out forged msg
   msg="valid client gets 200 with its endpoint on /endpoint/me"
@@ -184,18 +225,23 @@ check_valid_client() {
   if is_client_200 "$out"; then pass "$msg"; else fail "$msg"; fi
 }
 
+# Runs a command in a throwaway container on the app network and prints its output. The
+# exit status is the command's, or 124 and 137 when the outer limit ended it.
+run_throwaway() {
+  timeout -k 5 60 docker run --rm --init --name "$CONTAINER" --memory 64m --memory-swap 64m \
+    --cap-drop ALL --read-only --pull never --network "$APP_NET" "$THROWAWAY_IMAGE" "$@" 2>&1
+}
+
 # The server must answer 401 to a forged header from anywhere but the proxy's address.
 check_server_direct() {
-  local server_ip forged code image net out
+  local server_ip forged code out rc=0
   control_ok || { fail "direct server access gives 401 (control: valid client did not get 200)"; return; }
-  net="${PROJECT}_app"
-  server_ip=$(docker inspect --format "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" \
-    "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-      --filter "label=com.docker.compose.service=server")") || server_ip=""
-  [ -n "$server_ip" ] || { fail "direct server access gives 401 (server address on $net not found)"; return; }
+  server_ip=$(dk inspect --format "{{(index .NetworkSettings.Networks \"$APP_NET\").IPAddress}}" \
+    "$(service_container server)") || die "cannot read the server address on $APP_NET"
+  [ -n "$server_ip" ] || die "the server has no address on $APP_NET"
   forged=$(der_b64 "$CERTS/$CLIENT.crt")
 
-  code=$(curl --silent --output /dev/null --max-time "$NET_TIMEOUT" --write-out '%{http_code}' \
+  code=$(curl_t --silent --output /dev/null --max-time "$NET_TIMEOUT" --write-out '%{http_code}' \
     --header "X-Forwarded-Tls-Client-Cert: $forged" "http://$server_ip:$SERVER_PORT/endpoint/me") || code=000
   if [ "$code" = 401 ]; then
     pass "host to the server address with a forged header gives 401"
@@ -203,145 +249,149 @@ check_server_direct() {
     fail "host to the server address with a forged header gives $code, expected 401"
   fi
 
-  # A throwaway container on the app network, from an image the stack already pins by digest.
-  image=$(docker inspect --format '{{.Config.Image}}' \
-    "$(docker ps -q --filter "label=com.docker.compose.project=$PROJECT" \
-      --filter "label=com.docker.compose.service=db")") || image=""
-  case "$image" in *@sha256:*) ;; *) fail "app-network container gives 401 (db image is not pinned by digest)"; return ;; esac
-  CONTAINER="${PROJECT}-check-$$"
   # wget exits non-zero on the 401 itself, and docker exits non-zero when the outer time
   # limit kills it; in both cases the answer is read from the status line, or its absence.
-  out=$(timeout 60 docker run --rm --name "$CONTAINER" --memory 64m --memory-swap 64m \
-    --cap-drop ALL --read-only --pull never --network "$net" "$image" \
-    wget -q -T "$NET_TIMEOUT" -S -O /dev/null --header "X-Forwarded-Tls-Client-Cert: $forged" \
-    "http://$server_ip:$SERVER_PORT/endpoint/me" 2>&1) || true
+  out=$(run_throwaway wget -q -T "$NET_TIMEOUT" -S -O /dev/null \
+    --header "X-Forwarded-Tls-Client-Cert: $forged" "http://$server_ip:$SERVER_PORT/endpoint/me") || rc=$?
   code=$(printf '%s\n' "$out" | sed -n 's/^ *HTTP\/[0-9.]* \([0-9]*\).*/\1/p' | head -n 1)
   if [ "$code" = 401 ]; then
     pass "container on the app network with a forged header gets 401"
   else
-    fail "container on the app network with a forged header gets '${code:-no answer}', expected 401"
+    fail "container on the app network with a forged header gets '${code:-no answer}' (exit $rc), expected 401"
   fi
 }
 
-check_closed_ports() {
-  local p rc
+# From inside the app network the proxy's own listener must answer and its API and ping
+# ports must not. The :8443 answer is the control: without it a dead network would read
+# as a refusal of the other two.
+check_app_network_ports() {
+  local out rc=0 p
+  # Runs inside the container: <address> <port>... gives one "<port> open|closed" line each.
+  # shellcheck disable=SC2016 # the container's shell expands these, not this one
+  local probe='h=$1; shift; for p in "$@"; do
+    if nc -z -w 3 "$h" "$p"; then echo "$p open"; else echo "$p closed"; fi; done'
+  out=$(run_throwaway sh -c "$probe" sh "$PROXY_IP" "$PROXY_CONTAINER_PORT" "$TRAEFIK_API_PORT" "$PING_PORT") || rc=$?
+  if ! printf '%s\n' "$out" | /usr/bin/grep -qx "$PROXY_CONTAINER_PORT open"; then
+    fail "proxy API and ping ports are refused on the app network (control: :$PROXY_CONTAINER_PORT not reachable, exit $rc)"
+    return
+  fi
   for p in "$TRAEFIK_API_PORT" "$PING_PORT"; do
-    control_ok || { fail "host port $p is refused (control: valid client did not get 200)"; continue; }
-    rc=0
-    curl --silent --output /dev/null --max-time "$NET_TIMEOUT" "http://127.0.0.1:$p/" || rc=$?
-    if [ "$rc" -eq 7 ]; then
-      pass "host port $p is refused"
+    if printf '%s\n' "$out" | /usr/bin/grep -qx "$p closed"; then
+      pass "proxy port $p is refused from the app network"
     else
-      fail "host port $p is refused (curl exit $rc, expected 7)"
+      fail "proxy port $p is refused from the app network (not refused)"
     fi
   done
 }
 
-# Prints "router <name> ok|missing|unreadable" per HTTP router in the dynamic config on
-# stdin, "other <line>" for a tcp or udp section, and "routers <N>". A router is "ok" when
-# its middlewares list names client-cert. Any shape this does not read is reported as a
-# problem, never as ok. awk is used because the host needs no YAML parser for this one file.
-router_report() {
-  awk '
-    function has_cc(s,   n, t, i) {
-      n = split(s, t, /[][,"\047 ]+/)
-      for (i = 1; i <= n; i++) if (t[i] == "client-cert" || t[i] == "client-cert@file") return 1
-      return 0
-    }
-    function close_router() {
-      if (name != "") { print "router " name " " (ok ? "ok" : "missing"); n++ }
-      name = ""
-    }
-    NF == 0 { next }
-    {
-      match($0, /^ */); i = RLENGTH; line = substr($0, i + 1); sub(/[[:space:]]+$/, "", line)
-      if (i == 0) {
-        close_router(); in_http = (line ~ /^http:$/); in_routers = 0
-        if (line ~ /^(tcp|udp):/) print "other " line
-        next
-      }
-      if (!in_http) next
-      if (in_routers && i <= rind) { close_router(); in_routers = 0 }
-      if (!in_routers) {
-        if (line ~ /^routers:$/) { in_routers = 1; rind = i; cind = -1 }
-        next
-      }
-      if (cind < 0) cind = i
-      if (i == cind) {
-        close_router()
-        name = line; sub(/:.*$/, "", name); ok = 0; in_mw = 0; pind = -1
-        if (line !~ /:$/) { print "router " name " unreadable"; n++; name = "" }
-        next
-      }
-      if (name == "") next
-      if (pind < 0) pind = i
-      if (i == pind && line ~ /^middlewares:/) {
-        in_mw = 1; rest = line; sub(/^middlewares:/, "", rest); if (has_cc(rest)) ok = 1
-        next
-      }
-      if (in_mw && line ~ /^- /) { if (has_cc(line)) ok = 1; next }
-      if (i == pind) in_mw = 0
-    }
-    END { close_router(); print "routers " n + 0 }
-  '
-}
-
-# The config the running proxy loaded, read from its own container. The server believes
-# the forwarded certificate, so every route must pass through client-cert, and nothing may
-# widen who is trusted to supply that header or expose the management API.
-check_loaded_config() {
-  local report bad cmd tenv
-  report=$(printf '%s\n' "$DYNAMIC" | router_report)
-  bad=$(printf '%s\n' "$report" | /usr/bin/grep -E '^(router .* (missing|unreadable)|other )' || true)
-  if [ -n "$bad" ] || [ "$(printf '%s\n' "$report" | sed -n 's/^routers //p')" -lt 1 ]; then
-    fail "every router carries the client-cert middleware, no tcp or udp routers (problems: ${bad:-no HTTP router found})"
+# Only the proxy's own port may be published, so the API and ping listeners are never
+# reachable from the host, whatever address they bind inside the container.
+check_published_ports() {
+  local msg="the proxy publishes only $PROXY_CONTAINER_PORT/tcp" total ok
+  total=$(printf '%s\n' "$PORTS" | wc -l)
+  # grep -c prints 0 and exits 1 when no line matches; that count is the answer.
+  ok=$(printf '%s\n' "$PORTS" | /usr/bin/grep -c "^$PROXY_CONTAINER_PORT/tcp -> " || true)
+  if [ "$ok" -ge 1 ] && [ "$ok" -eq "$total" ]; then
+    pass "$msg"
   else
-    pass "every router carries the client-cert middleware, no tcp or udp routers"
-  fi
-  if printf '%s\n%s\n' "$STATIC" "$DYNAMIC" | /usr/bin/grep -qi 'forwardedHeaders'; then
-    fail "no forwardedHeaders setting anywhere in the proxy config"
-  else
-    pass "no forwardedHeaders setting anywhere in the proxy config"
-  fi
-  if printf '%s\n' "$STATIC" | /usr/bin/grep -qE "^[\"']?api[\"']?[[:space:]]*:"; then
-    fail "no api key in the static config (dashboard and management API off)"
-  else
-    pass "no api key in the static config (dashboard and management API off)"
-  fi
-  # The two files read above are only the whole config if nothing else feeds the proxy.
-  cmd=$(docker inspect --format '{{json .Config.Cmd}}' "$PROXY") || cmd=""
-  # grep -c prints 0 and exits 1 when no variable starts with TRAEFIK_; that is the expected answer.
-  tenv=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$PROXY" \
-    | /usr/bin/grep -c '^TRAEFIK_' || true)
-  if [ "$cmd" = '["traefik"]' ] && [ "$tenv" -eq 0 ] \
-    && printf '%s\n' "$STATIC" | /usr/bin/grep -qE '^[[:space:]]+filename:[[:space:]]*/etc/traefik/dynamic\.yml$'; then
-    pass "proxy settings come only from the two config files"
-  else
-    fail "proxy settings come only from the two config files (command ${cmd:-unknown}, $tenv TRAEFIK_ variables, or dynamic file not named in the static config)"
+    fail "$msg (docker port lists: $(printf '%s' "$PORTS" | tr '\n' ' '))"
   fi
 }
 
-# The proxy's mounts must be exactly: three single certificate files and two config files,
-# all bind mounts and read-only. Anything else, a folder or a socket included, is a failure.
+# Both Traefik files the running proxy has mounted are byte-identical to the ones committed
+# at HEAD. This also catches a host edit made after the proxy started, since Traefik reloads
+# the file provider live.
+check_committed_config() {
+  local name src
+  for name in traefik.yml dynamic.yml; do
+    if [ "$name" = traefik.yml ]; then src=$STATIC_SRC; else src=$DYNAMIC_SRC; fi
+    git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}traefik/$name" >"$TMP/head-$name" \
+      || die "traefik/$name is not committed at HEAD"
+    if [ -z "$src" ]; then
+      fail "mounted $name is identical to the committed file (no mount found for it)"
+    elif [ ! -r "$src" ]; then
+      die "mount source $src of $name is not readable on this host"
+    elif cmp -s "$src" "$TMP/head-$name"; then
+      pass "mounted $name is identical to the committed file"
+    else
+      fail "mounted $name differs from the committed file (source $src)"
+    fi
+  done
+}
+
+# The image the proxy runs is the one compose.yaml pins, and it starts with the image's own
+# entrypoint, command and environment: nothing swaps the program or feeds it settings.
+check_image_and_launch() {
+  local pinned n have image_id want got field
+  pinned=$(git -C "$APP_DIR" show "HEAD:${GIT_PREFIX}compose.yaml" \
+    | /usr/bin/grep -oE 'traefik:[^ ]+@sha256:[0-9a-f]{64}' | sort -u) || die "no pinned traefik image in compose.yaml at HEAD"
+  n=$(printf '%s\n' "$pinned" | wc -l)
+  [ -n "$pinned" ] && [ "$n" -eq 1 ] || die "compose.yaml at HEAD must pin exactly one traefik image"
+  have=$(dk inspect --format '{{.Config.Image}}' "$PROXY") || die "cannot read the proxy image"
+  if [ "$have" != "$pinned" ]; then
+    fail "proxy runs the pinned image (running $have, committed $pinned)"
+  else
+    image_id=$(dk inspect --format '{{.Image}}' "$PROXY") || die "cannot read the proxy image id"
+    want=$(dk image inspect --format '{{.Id}}' "$pinned") || die "the pinned image is not present locally"
+    if [ -n "$image_id" ] && [ "$image_id" = "$want" ]; then
+      pass "proxy runs the pinned image"
+    else
+      fail "proxy runs the pinned image (image id ${image_id:-empty} differs from $want)"
+    fi
+  fi
+  image_id=$(dk inspect --format '{{.Image}}' "$PROXY") || die "cannot read the proxy image id"
+  [ -n "$image_id" ] || die "the proxy has no image id"
+  for field in Entrypoint Env; do
+    got=$(dk inspect --format "{{json .Config.$field}}" "$PROXY") || die "cannot read the proxy $field"
+    want=$(dk image inspect --format "{{json .Config.$field}}" "$image_id") || die "cannot read the image $field"
+    case "$got" in '' | null | '[]') die "the proxy $field is empty; cannot compare it" ;; esac
+    if [ "$got" = "$want" ]; then
+      pass "proxy $field equals the image's own"
+    else
+      fail "proxy $field equals the image's own (running $got, image $want)"
+    fi
+  done
+  got=$(dk inspect --format '{{json .Config.Cmd}}' "$PROXY") || die "cannot read the proxy Cmd"
+  if [ "$got" = '["traefik"]' ]; then
+    pass "proxy command is [traefik]"
+  else
+    fail "proxy command is [traefik] (running ${got:-empty})"
+  fi
+  got=$(dk inspect --format '{{json .HostConfig.Tmpfs}}' "$PROXY") || die "cannot read the proxy Tmpfs"
+  case "$got" in null | '{}') pass "proxy has no tmpfs" ;; *) fail "proxy has no tmpfs (found $got)" ;; esac
+}
+
+# The proxy's mounts must be exactly: three single certificate files and the two config
+# files, all bind mounts and read-only. A folder, a volume, a tmpfs or a socket is a failure.
+# The config sources are compared by content in check_committed_config; here they stand in
+# as CONFIG so their path does not matter.
 check_mounts() {
   local msg="proxy mounts are exactly the three certificate files and two config files, read-only"
-  local workdir actual expected type src dst rw extra missing
-  workdir=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "$PROXY") \
-    || workdir=""
-  [ -n "$workdir" ] || { fail "$msg (compose working directory label not found)"; return; }
-  actual=$(docker inspect --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{"\n"}}{{end}}' "$PROXY") \
-    || { fail "$msg (mounts could not be read)"; return; }
-  # Sources compared as real paths, so a symlinked folder does not read as a different file.
-  actual=$(printf '%s\n' "$actual" | while IFS='|' read -r type src dst rw; do
+  local mounts actual expected type src dst rw extra missing ca crt key
+  mounts=$(dk inspect --format '{{range .Mounts}}{{.Type}}|{{.Source}}|{{.Destination}}|{{.RW}}{{"\n"}}{{end}}' "$PROXY") \
+    || die "cannot read the proxy mounts"
+  actual=""
+  while IFS='|' read -r type src dst rw; do
     [ -n "$type" ] || continue
-    printf '%s|%s|%s|%s\n' "$type" "$(readlink -f "$src")" "$dst" "$rw"
-  done | LC_ALL=C sort)
+    case "$dst" in
+      /etc/traefik/traefik.yml) STATIC_SRC=$src; src=CONFIG ;;
+      /etc/traefik/dynamic.yml) DYNAMIC_SRC=$src; src=CONFIG ;;
+      # Real paths, so a symlinked folder does not read as a different file; a source that
+      # does not resolve stays empty and matches nothing.
+      *) src=$(realpath -e -- "$src" 2>/dev/null) || src="" ;;
+    esac
+    actual+="$type|$src|$dst|$rw"$'\n'
+  done <<<"$mounts"
+  actual=$(printf '%s' "$actual" | LC_ALL=C sort)
+  ca=$(realpath -e -- "$CERTS/ca.crt") || die "cannot resolve $CERTS/ca.crt"
+  crt=$(realpath -e -- "$CERTS/localhost.crt") || die "cannot resolve $CERTS/localhost.crt"
+  key=$(realpath -e -- "$CERTS/localhost.key") || die "cannot resolve $CERTS/localhost.key"
   expected=$(printf '%s\n' \
-    "bind|$(readlink -f "$CERTS/ca.crt")|/certs/ca.crt|false" \
-    "bind|$(readlink -f "$CERTS/localhost.crt")|/certs/server.crt|false" \
-    "bind|$(readlink -f "$CERTS/localhost.key")|/certs/server.key|false" \
-    "bind|$(readlink -f "$workdir/traefik/traefik.yml")|/etc/traefik/traefik.yml|false" \
-    "bind|$(readlink -f "$workdir/traefik/dynamic.yml")|/etc/traefik/dynamic.yml|false" \
+    "bind|$ca|/certs/ca.crt|false" \
+    "bind|$crt|/certs/server.crt|false" \
+    "bind|$key|/certs/server.key|false" \
+    "bind|CONFIG|/etc/traefik/traefik.yml|false" \
+    "bind|CONFIG|/etc/traefik/dynamic.yml|false" \
     | LC_ALL=C sort)
   if [ "$actual" = "$expected" ]; then
     pass "$msg"
@@ -359,9 +409,11 @@ main() {
   check_refusals
   check_tls11
   check_server_direct
-  check_closed_ports
-  check_loaded_config
+  check_app_network_ports
+  check_published_ports
   check_mounts
+  check_committed_config
+  check_image_and_launch
   [ "$FAILED" -eq 0 ] || { echo "one or more checks failed" >&2; exit 1; }
   echo "all checks passed"
 }
