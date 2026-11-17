@@ -86,13 +86,18 @@ service_container() {
 
 preflight() {
   [ -n "$CERTS" ] && [ -n "$PROJECT" ] || die "usage: check-proxy.sh <certs-dir> <compose-project> [client-cn]"
-  local c line
+  local c line endpoint
   for c in curl openssl docker git timeout cmp realpath mktemp sed sort comm head tail tr wc dirname rm; do
     command -v "$c" >/dev/null 2>&1 || die "$c is required and not on PATH"
   done
   [ -x /usr/bin/grep ] || die "/usr/bin/grep is required"
   # Mount sources are host paths; a remote daemon would show paths this host cannot read.
   case "${DOCKER_HOST:-unix://}" in unix://*) ;; *) die "DOCKER_HOST is remote; run this on the Docker host" ;; esac
+  # The same holds for the active context, which DOCKER_CONTEXT or the CLI config can point
+  # at a remote daemon without touching DOCKER_HOST.
+  endpoint=$(dk context inspect --format '{{.Endpoints.docker.Host}}') \
+    || die "cannot read the active docker context"
+  case "$endpoint" in unix://*) ;; *) die "the active docker context points at ${endpoint:-nothing}; run this on the Docker host" ;; esac
   for c in ca.crt localhost.crt localhost.key "$CLIENT.crt" "$CLIENT.key"; do
     [ -r "$CERTS/$c" ] || die "cannot read $CERTS/$c"
   done
@@ -243,7 +248,8 @@ check_valid_client() {
 # exit status is the command's, or 124 and 137 when the outer limit ended it.
 run_throwaway() {
   timeout -k 5 60 docker run --rm --init --name "$CONTAINER" --memory 64m --memory-swap 64m \
-    --cap-drop ALL --read-only --pull never --network "$APP_NET" "$THROWAWAY_IMAGE" "$@" 2>&1
+    --cap-drop ALL --security-opt no-new-privileges --pids-limit 64 --user 65534:65534 \
+    --read-only --pull never --network "$APP_NET" "$THROWAWAY_IMAGE" "$@" 2>&1
 }
 
 # The server must answer 401 to a forged header from anywhere but the proxy's address.
