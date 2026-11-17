@@ -13,6 +13,7 @@ __all__ = [
     "MAX_HEADER_CHARS",
     "ClientCert",
     "ClientCertError",
+    "check_common_name",
     "parse_forwarded_cert",
 ]
 
@@ -26,6 +27,14 @@ MAX_HEADER_CHARS = 16384
 # The CN reaches the debug log and the endpoint lookup: refuse control, format, line and
 # paragraph separator, private-use, surrogate and unassigned characters.
 _BAD_CN_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Co", "Cs", "Cn"})
+
+
+def check_common_name(cn: str) -> None:
+    """Raise ClientCertError("no_cn") or ("bad_cn") for a CN the server will not accept."""
+    if not cn.strip():
+        raise ClientCertError("no_cn")
+    if cn != cn.strip() or any(unicodedata.category(char) in _BAD_CN_CATEGORIES for char in cn):
+        raise ClientCertError("bad_cn")
 
 
 class ClientCertError(Exception):
@@ -92,8 +101,7 @@ def parse_forwarded_cert(value: str | None) -> ClientCert:
     if len(names) > 1:
         raise ClientCertError("multiple_cn")
     cn = names[0].value
-    if not isinstance(cn, str) or not cn.strip():
+    if not isinstance(cn, str):
         raise ClientCertError("no_cn")
-    if cn != cn.strip() or any(unicodedata.category(char) in _BAD_CN_CATEGORIES for char in cn):
-        raise ClientCertError("bad_cn")
+    check_common_name(cn)
     return ClientCert(cn=cn, subject=subject, issuer=issuer, serial=serial)

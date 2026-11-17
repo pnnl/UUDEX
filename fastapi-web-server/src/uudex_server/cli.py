@@ -8,16 +8,17 @@ import argparse
 import asyncio
 import logging
 import sys
-import unicodedata
 import uuid
 from collections.abc import Sequence
 
 from sqlalchemy import text
 
-from uudex_server.core.client_cert import _BAD_CN_CATEGORIES
+from uudex_server.core import client_cert
 from uudex_server.models import EndPoint, Participant
 from uudex_server.repos.endpoint_repository import EndpointRepository
 from uudex_server.services.database_service import get_db_session, shutdown_db
+
+__all__ = ["Refused", "bootstrap_admin", "check_common_name", "main"]
 
 # Serializes concurrent bootstrap runs on PostgreSQL. Arbitrary but fixed; it only has to be
 # the same in every run of this command.
@@ -29,11 +30,15 @@ class Refused(Exception):
 
 
 def check_common_name(cn: str) -> None:
-    """Apply the CN rules the server applies to a certificate (core.client_cert)."""
-    if not cn.strip():
-        raise Refused("the common name is empty")
-    if cn != cn.strip() or any(unicodedata.category(char) in _BAD_CN_CATEGORIES for char in cn):
-        raise Refused("the common name has edge whitespace or control or format characters")
+    """Apply the CN rules the server applies to a certificate, as a refusal."""
+    try:
+        client_cert.check_common_name(cn)
+    except client_cert.ClientCertError as error:
+        if error.reason == "no_cn":
+            raise Refused("the common name is empty") from None
+        raise Refused(
+            "the common name has edge whitespace or control or format characters"
+        ) from None
 
 
 async def bootstrap_admin(cn: str, participant_id: int) -> str:

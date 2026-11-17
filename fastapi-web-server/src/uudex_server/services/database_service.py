@@ -53,7 +53,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-async def shutdown_db():
+async def shutdown_db() -> None:
     """Cleanup database connections"""
     global _engine, _async_session
     _async_session = None
