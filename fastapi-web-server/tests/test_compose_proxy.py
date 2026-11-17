@@ -46,13 +46,25 @@ def fold_keys(node: Any, source: str) -> Any:
     return node
 
 
-def load_traefik(relative: str) -> Doc:
-    """Read a Traefik file the way Traefik does: keys match case-insensitively and the
+def parse_traefik(text: str, source: str) -> Doc:
+    """Read Traefik YAML the way Traefik does: keys match case-insensitively and the
     file is rendered as a Go template, so a template action can rewrite what YAML shows.
     Every key in the result is lower case."""
-    text = (SERVER_DIR / relative).read_text()
-    assert "{{" not in text, f"{relative}: template syntax"
-    return fold_keys(yaml.safe_load(text), relative)
+    assert "{{" not in text, f"{source}: template syntax"
+    return fold_keys(yaml.safe_load(text), source)
+
+
+def load_traefik(relative: str) -> Doc:
+    return parse_traefik((SERVER_DIR / relative).read_text(), relative)
+
+
+def key_names(node: Any) -> set[str]:
+    """Every mapping key at any depth, through lists as well."""
+    if isinstance(node, dict):
+        return set(node) | {name for value in node.values() for name in key_names(value)}
+    if isinstance(node, list):
+        return {name for item in node for name in key_names(item)}
+    return set()
 
 
 @pytest.fixture(scope="module")
@@ -83,6 +95,29 @@ def mount_strings(service: Doc) -> list[str]:
         else:
             found.extend(str(volume.get(key, "")) for key in ("source", "target"))
     return found
+
+
+HELPER_REFUSALS = [
+    pytest.param("Routers: {}\nrouters: {}\n", "keys differing only in case", id="case-collision"),
+    pytest.param("a:\n  - B: 1\n    b: 2\n", "keys differing only in case", id="case-in-list-item"),
+    pytest.param("a: '{{ x }}'\n", "template syntax", id="template"),
+]
+
+
+@pytest.mark.parametrize(("text", "message"), HELPER_REFUSALS)
+def test_traefik_parser_refuses_ambiguous_files(text, message):
+    with pytest.raises(AssertionError, match=message):
+        parse_traefik(text, "sample.yml")
+
+
+def test_traefik_parser_lowers_every_key_through_lists():
+    parsed = parse_traefik("Http:\n  List:\n    - Inner: 1\n", "sample.yml")
+    assert parsed == {"http": {"list": [{"inner": 1}]}}
+
+
+def test_key_names_walks_nested_mappings_and_lists():
+    node = {"a": [{"b": {"c": 1}}, [{"d": 2}]], "e": 3}
+    assert key_names(node) == {"a", "b", "c", "d", "e"}
 
 
 def test_traefik_files_are_plain_yaml_with_no_case_duplicates():
@@ -182,14 +217,7 @@ def test_static_entrypoints_are_the_tls_listener_and_a_loopback_ping(static):
 
 
 def test_no_entrypoint_trusts_forwarded_headers_or_proxy_protocol(static):
-    def names(node: Any) -> set[str]:
-        if isinstance(node, dict):
-            return set(node) | {name for value in node.values() for name in names(value)}
-        if isinstance(node, list):
-            return {name for item in node for name in names(item)}
-        return set()
-
-    assert not {"forwardedheaders", "proxyprotocol"} & names(static["entrypoints"])
+    assert not {"forwardedheaders", "proxyprotocol"} & key_names(static["entrypoints"])
 
 
 def test_proxy_cannot_enable_the_api_or_docker_provider_from_compose(compose):
