@@ -36,6 +36,11 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 import abc
 
+
+class BrokerError(Exception):
+    """A message broker call failed. Services raise this instead of the client library's errors."""
+
+
 #
 # note: this interface is in-flux as use cases mature
 #
