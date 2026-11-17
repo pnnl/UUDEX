@@ -94,6 +94,8 @@ The secrets are mounted read-only at `/run/secrets` (the image sets `UUDEX_SECRE
        curl --cacert $C/ca.crt https://localhost:8443/                  # fails: "tlsv13 alert certificate required"
        curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: "ssl/tls alert bad certificate"
 
+   `tests/compose/check-proxy.sh "$UUDEX_CERTS" uudex alice` runs these and the other proxy checks against the running stack (arguments: certificates folder, compose project, client name); it exits non-zero if any check fails.
+
    The proxy accepts TLS 1.2 and 1.3. TLS 1.2 is limited to ECDHE with AES-GCM or ChaCha20, so older CBC and SHA-1 suites are refused. It logs one line per request on stdout (`docker compose logs proxy`); request headers, including the forwarded certificate, are not logged.
 
 The proxy is the only way in: it has one router, and that router adds the verified certificate as `X-Forwarded-Tls-Client-Cert`, replacing anything the client sent. Any router you add to `traefik/dynamic.yml` that reaches the server must carry the `client-cert` middleware, because the server does not verify signatures. Do not mount the Docker socket or enable the Traefik API or dashboard.
