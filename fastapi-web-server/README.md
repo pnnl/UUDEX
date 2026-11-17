@@ -87,6 +87,14 @@ Or run `docker compose --env-file .env.compose down -v`, which deletes the datab
 
 "Healthy" for the server means only that it answers HTTP on `/openapi.json`. It does not show that the database is reachable or usable.
 
+## First administrator
+
+No API call creates the first administrator. After the stack is up and a participant exists, run this inside the server container (the image installs the `uudex-server` command):
+
+    docker compose --env-file .env.compose exec server uudex-server bootstrap-admin --cn <name> --participant-id <id>
+
+`<name>` is the common name of the administrator's client certificate. The command prints the new endpoint's uuid and exits 0. It exits 1, writes nothing and says why on stderr when an active administrator already exists, the participant is missing or inactive, an endpoint already has that certificate DN, or the name is one the server would refuse (empty, edge whitespace, control characters). It reads the same settings as the server and prints no secret.
+
 ## PostGresql Setup
 
 See (database-layer/README.md) for instructions on setting up the database using docker.
