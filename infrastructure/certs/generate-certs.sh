@@ -8,10 +8,46 @@ STEP="starting up"
 trap 'echo "Error: step failed: $STEP (exit status $?)" >&2' ERR
 
 # Everything is built in a staging folder inside the output folder and moved
-# into place at the end, so a failed run leaves the old files as they were.
+# into place at the end. If the move itself fails or is cut off, the files
+# already moved are put back from hard-link copies kept in the staging folder,
+# so the output folder is as it was. Only a kill -9 during the move can leave
+# a mixed set, and then the staging folder is left behind holding the copies.
 STAGE=""
 MARKER=".uudex-certs"
+COMMITTING=false
+PLACED=()
+BACKED=()
+
+# Undoes a move that did not finish: a file that replaced an old one gets the
+# old one back, a file that was new is removed. Runs once; it must complete
+# before the staging folder, which holds the copies, is deleted.
+rollback_commit() {
+    local i name undone=() stuck=()
+    [ "$COMMITTING" = true ] || return 0
+    COMMITTING=false
+    for ((i = ${#PLACED[@]} - 1; i >= 0; i--)); do
+        name="${PLACED[i]}"
+        if [[ " ${BACKED[*]+"${BACKED[*]}"} " == *" $name "* ]]; then
+            if mv -f -- "$STAGE/.old/$name" "$CERTS_DIR/$name"; then
+                undone+=("$name")
+            else
+                stuck+=("$name")
+            fi
+        elif rm -f -- "${CERTS_DIR:?}/$name"; then
+            undone+=("$name")
+        else
+            stuck+=("$name")
+        fi
+    done
+    if [ ${#stuck[@]} -gt 0 ]; then
+        echo "Error: the move into $CERTS_DIR was cut off and could not be undone for: ${stuck[*]}; these files came from this run and may not match the others, so check them before use" >&2
+    elif [ ${#undone[@]} -gt 0 ]; then
+        echo "Error: the move into $CERTS_DIR was cut off; these files had already been moved and were put back as they were: ${undone[*]}" >&2
+    fi
+}
+
 cleanup() {
+    rollback_commit
     if [[ -n "$STAGE" && "$STAGE" == */.staging.* ]]; then
         rm -rf -- "${STAGE:?}"
     fi
@@ -830,23 +866,51 @@ plan_outputs
 STEP="create staging folder"
 STAGE=$(mktemp -d "$CERTS_DIR/.staging.XXXXXX") || die "cannot make a staging folder in $CERTS_DIR"
 
-# Without --force, a file that appeared since the check is not replaced.
+# Moves one staged file into the output folder, or dies. Without --force, a
+# file that appeared since the check is not replaced. A replaced file is kept
+# first as a hard link in $STAGE/.old, so rollback_commit can restore it and
+# the name never goes missing. The destination is checked on both sides of the
+# move because mv would put the file inside a folder, or a link to one, that
+# appeared there.
 place_file() {
-    local src="$1" name dest
+    local src="$1" name dest replace=false
     name=$(basename -- "$src")
     dest="$CERTS_DIR/$name"
-    if [ "$FORCE" = true ] || [ "$name" = "ca.srl" ]; then
-        mv -f -- "$src" "$dest"
-    elif ! mv -n -- "$src" "$dest" || [ -e "$src" ]; then
+    if [ "$FORCE" = true ] || [ "$name" = "ca.srl" ]; then replace=true; fi
+    if [ -L "$dest" ] || [ -d "$dest" ]; then
+        die "$dest is a link or a folder that appeared while this run was working; nothing was moved into it"
+    fi
+    if [ -e "$dest" ]; then
+        if [ "$replace" = false ]; then
+            die "$dest appeared while this run was working; it was not replaced"
+        fi
+        ln -- "$dest" "$STAGE/.old/$name" || die "cannot keep a copy of $dest, so it was not replaced"
+        BACKED+=("$name")
+    fi
+    if [ "$replace" = true ]; then
+        mv -f -- "$src" "$dest" || die "cannot move $name into $CERTS_DIR"
+    else
+        mv -n -- "$src" "$dest" || die "cannot move $name into $CERTS_DIR"
+    fi
+    if [ -e "$src" ]; then
         die "$dest appeared while this run was working; it was not replaced"
     fi
+    if [ -L "$dest" ] || [ ! -f "$dest" ]; then
+        if [ -d "$dest" ]; then
+            rm -f -- "${dest:?}/$name"
+        fi
+        die "$dest is not a regular file after the move; a link or a folder appeared there while this run was working"
+    fi
+    PLACED+=("$name")
 }
 
-# The marker goes first, so a run cut off part-way still leaves a folder this
-# script will accept again.
+# The marker goes first, so a folder this script made, and cut off before the
+# move finished, is still one it will accept again.
 commit_staged() {
     local f staged
     STEP="move files into the output folder"
+    mkdir -- "$STAGE/.old" || die "cannot make a folder for the old files in $STAGE"
+    COMMITTING=true
     if [ ! -e "$CERTS_DIR/$MARKER" ]; then
         printf 'Made by generate-certs.sh. Holds development keys; keep it private.\n' > "$STAGE/$MARKER"
         place_file "$STAGE/$MARKER"
@@ -857,6 +921,7 @@ commit_staged() {
     for f in "${staged[@]+"${staged[@]}"}"; do
         place_file "$f"
     done
+    COMMITTING=false
 }
 
 CA_KEY="$CERTS_DIR/ca.key"

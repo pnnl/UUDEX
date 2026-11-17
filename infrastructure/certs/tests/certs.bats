@@ -1461,6 +1461,112 @@ assert_refusal_changes_nothing() {
     [ -z "$(ls -A "$TT/open")" ]
 }
 
+# The move into the folder is all or nothing.
+
+# A mv that fails, or plants something first, when its arguments match a
+# pattern; it runs the real mv otherwise. $1 is the pattern, $2 an optional
+# command to run before the real mv.
+stub_mv() {
+    local real
+    real=$(command -v mv)
+    MVBIN="$TT/mvbin"
+    mkdir -p "$MVBIN"
+    cat > "$MVBIN/mv" <<STUBEOF
+#!/bin/bash
+if [[ "\$*" =~ $1 ]]; then
+    ${2:-exit 1}
+fi
+exec $real "\$@"
+STUBEOF
+    chmod +x "$MVBIN/mv"
+}
+
+same_pair() {
+    [ "$(openssl x509 -in "$1.crt" -noout -pubkey)" = "$(openssl pkey -in "$1.key" -pubout)" ]
+}
+
+@test "all or nothing: a forced move that fails part-way puts every file back, keeps the key and certificate pair, and names the files" {
+    cd "$WORKDIR"
+    local d="$TT/o" before
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    stub_mv '\.staging\.[[:alnum:]]{6}/localhost\.key'
+    PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"put back as they were"*"localhost.crt"* ]] || { echo "$output"; return 1; }
+    [ "$(snapshot "$d")" = "$before" ]
+    same_pair "$d/localhost"
+    same_pair "$d/alice"
+}
+
+@test "all or nothing: a first run whose move fails between the CA certificate and the CA key leaves an empty folder" {
+    cd "$WORKDIR"
+    local d="$TT/first"
+    stub_mv '\.staging\.[[:alnum:]]{6}/ca\.key'
+    PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [ -z "$(ls -A "$d")" ] || { ls -A "$d"; return 1; }
+    run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d"
+    [ "$status" -eq 0 ]
+}
+
+@test "all or nothing: a folder planted at a destination during the run gets nothing moved into it, and the run fails" {
+    cd "$WORKDIR"
+    local d="$TT/o" real
+    make_full_set "$d"
+    real=$(command -v openssl)
+    mkdir -p "$TT/plant"
+    printf '#!/bin/sh\ncase "$*" in *"pkcs12 -export"*) mkdir -p "%s/bob.key" ;; esac\nexec %s "$@"\n' "$d" "$real" > "$TT/plant/openssl"
+    chmod +x "$TT/plant/openssl"
+    PATH="$TT/plant:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$d/bob.key is a link or a folder that appeared while this run was working"* ]] || { echo "$output"; return 1; }
+    [ -z "$(ls -A "$d/bob.key")" ]
+    [ ! -e "$d/bob.crt" ]
+}
+
+@test "all or nothing: a link to a folder planted at a destination of a forced run is not followed" {
+    cd "$WORKDIR"
+    local d="$TT/o" real
+    make_full_set "$d"
+    mkdir -p "$TT/elsewhere"
+    real=$(command -v openssl)
+    mkdir -p "$TT/plant"
+    printf '#!/bin/sh\ncase "$*" in *"pkcs12 -export"*) rm -f "%s/alice.key"; ln -s "%s/elsewhere" "%s/alice.key" ;; esac\nexec %s "$@"\n' "$d" "$TT" "$d" "$real" > "$TT/plant/openssl"
+    chmod +x "$TT/plant/openssl"
+    PATH="$TT/plant:$PATH" run timeout 60 "$GEN_SCRIPT" alice -k 2048 -o "$d" --force
+    [ "$status" -ne 0 ]
+    [ -z "$(ls -A "$TT/elsewhere")" ]
+}
+
+@test "all or nothing: a folder that appears at a destination between the check and the move gets no key" {
+    cd "$WORKDIR"
+    local d="$TT/o"
+    make_full_set "$d"
+    stub_mv '\.staging\.[[:alnum:]]{6}/bob\.key ' "mkdir -p '$d/bob.key'"
+    PATH="$MVBIN:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$d/bob.key is not a regular file after the move"* ]] || { echo "$output"; return 1; }
+    [ -z "$(ls -A "$d/bob.key")" ]
+}
+
+@test "all or nothing: a file planted during the run is kept as it is, the run fails, and nothing else of the run stays" {
+    cd "$WORKDIR"
+    local d="$TT/o" real before expected
+    make_full_set "$d"
+    before=$(snapshot "$d")
+    real=$(command -v openssl)
+    mkdir -p "$TT/plant"
+    printf '#!/bin/sh\ncase "$*" in *"pkcs12 -export"*) printf planted > "%s/bob.p12" ;; esac\nexec %s "$@"\n' "$d" "$real" > "$TT/plant/openssl"
+    chmod +x "$TT/plant/openssl"
+    PATH="$TT/plant:$PATH" run timeout 60 "$GEN_SCRIPT" bob -k 2048 -o "$d"
+    [ "$status" -ne 0 ]
+    [[ "$output" == *"$d/bob.p12 appeared while this run was working"* ]] || { echo "$output"; return 1; }
+    [ "$(cat "$d/bob.p12")" = "planted" ]
+    expected=$(printf '%s\n%s bob.p12\n' "$before" "$(printf planted | sha256sum | cut -c1-64)" | sort)
+    [ "$(snapshot "$d" | sort)" = "$expected" ]
+}
+
 @test "client names: ca, ca-trusted, server and localhost are refused before the folder is made; a similar name is fine" {
     cd "$WORKDIR"
     local n
