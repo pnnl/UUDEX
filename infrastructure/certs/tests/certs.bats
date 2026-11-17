@@ -1678,7 +1678,7 @@ assert_second_signal_during_rollback_ignored() {
     [ "$(modes_of "$d")" = "$modes" ]
     same_pair "$d/localhost"
     same_pair "$d/alice"
-    [ -z "$(ls -A "$d" | /usr/bin/grep '^\.staging\.' || true)" ]
+    if compgen -G "$d/.staging.*" > /dev/null; then echo "staging folder left"; return 1; fi
 }
 
 @test "all or nothing: a second TERM during the rollback is ignored and every old file is still put back" {
@@ -1718,7 +1718,7 @@ assert_second_signal_during_rollback_ignored() {
     [[ "$out" == *"is not a regular file after the move"* ]] || { echo "$out"; return 1; }
     [[ "$out" == *"removed because this run made them: bob.crt"* ]] || { echo "$out"; return 1; }
     [[ "$out" != *"could not be fully undone"* ]] || { echo "$out"; return 1; }
-    [ -z "$(ls -A "$d" | /usr/bin/grep '^\.staging\.' || true)" ]
+    if compgen -G "$d/.staging.*" > /dev/null; then echo "staging folder left"; return 1; fi
 }
 
 @test "all or nothing: when a file cannot be put back the staging folder and the old files are kept and named, and the run fails" {
