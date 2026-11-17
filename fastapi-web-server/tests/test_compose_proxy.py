@@ -85,6 +85,13 @@ def load_traefik(relative: str) -> Doc:
     return parse_traefik((SERVER_DIR / relative).read_text(), relative)
 
 
+def ping_host(address: str) -> str:
+    """The host part of a "host:port" address, without the brackets of an IPv6 literal."""
+    host = address.rpartition(":")[0].removeprefix("[").removesuffix("]")
+    assert host, f"ping address has no host: {address!r}"
+    return host
+
+
 def key_names(node: Any) -> set[str]:
     """Every mapping key at any depth, through lists as well."""
     if isinstance(node, dict):
@@ -158,6 +165,20 @@ def test_traefik_parser_allows_a_key_that_overrides_a_merged_one():
     assert parsed["b"] == {"k": 2}
 
 
+@pytest.mark.parametrize(
+    ("address", "host"),
+    [("127.0.0.1:8082", "127.0.0.1"), ("[::1]:8082", "::1")],
+)
+def test_ping_host_drops_the_port_and_the_ipv6_brackets(address, host):
+    assert ping_host(address) == host
+
+
+@pytest.mark.parametrize("address", [":8082", "[]:8082", "8082"])
+def test_ping_host_refuses_an_address_with_no_host(address):
+    with pytest.raises(AssertionError, match="no host"):
+        ping_host(address)
+
+
 def test_key_names_walks_nested_mappings_and_lists():
     node = {"a": [{"b": {"c": 1}}, [{"d": 2}]], "e": 3}
     assert key_names(node) == {"a", "b", "c", "d", "e"}
@@ -178,11 +199,13 @@ def test_every_router_carries_only_the_client_cert_middleware(dynamic):
         assert router.get("middlewares") == ["client-cert"], name
         assert router.get("entrypoints") == ["websecure"], name
         assert router.get("tls", {}).get("options", "default") == "default", name
-    assert set(dynamic["http"]["middlewares"]) == {"client-cert"}
-    assert dynamic["http"]["middlewares"]["client-cert"]["passtlsclientcert"]["pem"] is True
+    # One middleware type only: any other could rewrite the identity header after it is set.
+    assert dynamic["http"]["middlewares"] == {"client-cert": {"passtlsclientcert": {"pem": True}}}
 
 
 def test_every_client_must_present_a_certificate_from_the_mounted_ca(dynamic, compose):
+    # A second option set could be picked by a router or an entrypoint.
+    assert set(dynamic["tls"]["options"]) == {"default"}
     options = dynamic["tls"]["options"]["default"]
     assert options["clientauth"]["clientauthtype"] == "RequireAndVerifyClientCert"
     assert options["clientauth"]["cafiles"] == ["/certs/ca.crt"]
@@ -255,8 +278,8 @@ def test_static_providers_are_exactly_the_one_file_provider(static):
 def test_static_entrypoints_are_the_tls_listener_and_a_loopback_ping(static):
     entrypoints = static["entrypoints"]
     assert set(entrypoints) == {"websecure", "ping"}
-    host = entrypoints["ping"]["address"].rpartition(":")[0]
-    assert ip_address(host).is_loopback
+    assert set(entrypoints["websecure"]) == {"address"}, "no per-entrypoint TLS or http options"
+    assert ip_address(ping_host(entrypoints["ping"]["address"])).is_loopback
 
 
 def test_no_entrypoint_trusts_forwarded_headers_or_proxy_protocol(static):
