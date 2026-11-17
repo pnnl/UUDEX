@@ -55,9 +55,11 @@ def mount_strings(service: Doc) -> list[str]:
 
 
 def test_every_router_carries_the_client_cert_middleware(dynamic):
+    assert not {"tcp", "udp"} & set(dynamic), "only HTTP routers may exist"
     routers = dynamic["http"]["routers"]
     assert routers
     for name, router in routers.items():
+        assert "tls" in router, name
         assert "client-cert" in router.get("middlewares", []), name
         assert router.get("tls", {}).get("options", "default") == "default", name
     assert dynamic["http"]["middlewares"]["client-cert"]["passTLSClientCert"]["pem"] is True
