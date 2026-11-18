@@ -210,7 +210,7 @@ class TestLibraryTextStaysOutOfResponses:
         ):
             result = await subject_routes.manage_subject_queues(
                 "subj-uuid",
-                QueueManagementRequest(action="delete", queue_name="q"),
+                QueueManagementRequest(action="delete", queue_name="q_sub-a"),
                 session,
                 admin_user,
                 broker,
@@ -528,7 +528,7 @@ class TestOtherHandlersLog:
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.manage_subject_queues(
                 "subj-uuid",
-                QueueManagementRequest(action="delete", queue_name="q"),
+                QueueManagementRequest(action="delete", queue_name="q_sub-a"),
                 session,
                 admin_user,
                 broker,
