@@ -145,12 +145,7 @@ async def consume_messages(
         if remaining_messages <= 0:
             break
 
-        # Build queue name using the same pattern as creation
-        queue_name = broker_service.build_queue_name(
-            tag="uudex",  # Default tag used in UUDEX
-            subject_name=sub_subject.subject.subject_name,
-            subscription_uuid=subscription_uuid,
-        )
+        queue_name = sub_subject.backing_queue_name
 
         # Consume messages from this queue
         messages_to_get = min(messages_per_subject, remaining_messages)
