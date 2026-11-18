@@ -155,10 +155,21 @@ async def consume_messages(
         messages_to_get = min(messages_per_subject, remaining_messages)
         try:
             raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
-        except BrokerError:
-            # A deleted queue stays named on its link; keep what earlier queues already gave up.
+        except BrokerError as e:
+            if e.status_code == status.HTTP_404_NOT_FOUND:
+                # A deleted queue stays named on its link; skip only that, not a broker failure.
+                _log.warning("Skipping queue %s: the broker reports it does not exist", queue_name)
+                continue
             _log.exception("Broker failed to read queue %s", queue_name)
-            continue
+            if all_messages:
+                # Reads are destructive, so failing now would lose these; the next call surfaces
+                # the failure.
+                break
+            # 502: the broker is an upstream that failed, not a fault in this server.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Message broker unavailable",
+            ) from e
 
         # Convert raw messages to MessageContent objects
         if raw_messages:

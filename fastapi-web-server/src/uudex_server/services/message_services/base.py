@@ -40,7 +40,15 @@ from typing import Protocol
 
 
 class BrokerError(Exception):
-    """A message broker call failed. Services raise this instead of the client library's errors."""
+    """A message broker call failed. Services raise this instead of the client library's errors.
+
+    status_code is the broker's HTTP status when it answered with one (404 for a missing queue),
+    and None when it did not answer, as for a network failure or rejected credentials.
+    """
+
+    def __init__(self, message: str, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class UntrustedBrokerName(Exception):

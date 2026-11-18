@@ -99,7 +99,7 @@ class TestConsumeAfterQueueDelete:
 
         def get_messages(queue: str, count: int = 1):
             if queue == gone:
-                raise BrokerError("queue deleted")
+                raise BrokerError("queue deleted", status_code=404)
             return [{"payload": "p", "message_id": "m1"}]
 
         broker = Mock()

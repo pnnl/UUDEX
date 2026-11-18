@@ -66,7 +66,8 @@ def _raises_broker_error(method: Callable[_P, _R]) -> Callable[_P, _R]:
         try:
             return method(*args, **kwargs)
         except _LIBRARY_ERRORS as e:
-            raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}") from e
+            status_code = e.status if isinstance(e, pyrabbit_http.HTTPError) else None
+            raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}", status_code) from e
 
     return wrapper
 
