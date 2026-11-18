@@ -1,6 +1,6 @@
 # Running the server locally
 
-Checked against commit edaf169.
+Checked against commit edaf169. The database, seed and clean-up steps were re-run at a06f91c (only documentation differs between the two).
 
 This page starts the server on your machine with `uvicorn`, without the proxy. Use it to work on the code. To test with client certificates, use [running-the-stack.md](running-the-stack.md) instead.
 
@@ -57,6 +57,14 @@ postgresql+asyncpg://postgres_user:<password>@localhost:55432/uudex
 
 Remove it when you are done: `docker rm -f uudex-localdb`. The data goes with it.
 
+Running the `docker run` line a second time fails because the name is taken:
+
+```text
+docker: Error response from daemon: Conflict. The container name "/uudex-localdb" is already in use by container "...". You have to remove (or rename) that container to be able to reuse that name.
+```
+
+To keep the data, start the old container again with `docker start uudex-localdb`. To start empty, remove it first with `docker rm -f uudex-localdb`, then run the `docker run` line.
+
 The image is the one `compose.yaml` pins. `infrastructure/postgresql/README.md` describes a different setup (PostgreSQL 14.1 with RabbitMQ and fixed development credentials, data under your home directory). It was not part of this check.
 
 ## 4. Start the server
@@ -86,17 +94,18 @@ Stop the server with Ctrl+C.
 
 ## 5. First administrator
 
-No API call creates the first administrator. The command below needs an existing participant, so insert one with `psql` first. This uses the container from step 3:
+No API call creates the first administrator. The command below needs an existing participant, and the tables exist only after the server in step 4 has started once. Insert the participant with `psql`. This uses the container from step 3. `-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The `where not exists` guard makes the seed safe to run again.
 
 ```bash
-docker exec -i uudex-localdb psql -U postgres_user -d uudex <<'SQL'
+docker exec -i uudex-localdb psql -1 -v ON_ERROR_STOP=1 -U postgres_user -d uudex <<'SQL'
 insert into participant (active_sw, participant_uuid, participant_short_name, participant_long_name, root_org_sw)
-  values ('Y', 'p-0001', 'org', 'Organization', 'Y');
+  select 'Y', 'p-0001', 'org', 'Organization', 'Y'
+  where not exists (select 1 from participant where participant_uuid = 'p-0001');
 select participant_id, participant_uuid from participant;
 SQL
 ```
 
-The select prints `participant_id` 1. Then run, with the participant id from that output:
+On the first run the insert prints `INSERT 0 1`; on a second run it prints `INSERT 0 0`. The select prints `participant_id` 1. If the server has not started yet, the run stops with `ERROR:  relation "participant" does not exist` and exit 3. Then run, with the participant id from that output:
 
 ```bash
 poetry run uudex-server bootstrap-admin --cn <name> --participant-id 1
@@ -119,3 +128,14 @@ uudex-server: refused: an active administrator already exists
 It reads the same settings as the server and prints no secret. Each run prints the settings file and the database it uses to stderr (password hidden). Check the database line: an environment variable or the secrets directory can override the file. Any other failure prints one fixed line naming what failed (settings, connecting, reading the tables or writing) and never the error text. Only a failure before the write says "nothing was written"; after it, look for an endpoint with that certificate DN before running again. Two runs started together are safe: the second is refused. The PostgreSQL guard for that was checked by hand and no test runs it yet (#39).
 
 For the compose stack the same command runs inside the server container: see [running-the-stack.md](running-the-stack.md).
+
+## Remove what this page created
+
+Stop the server with Ctrl+C, then:
+
+```bash
+docker rm -f uudex-localdb
+rm .env secrets/postgres_dsn secrets/messagebus_connection
+```
+
+Delete your password file too. `poetry env remove --all` removes the virtual environment.
