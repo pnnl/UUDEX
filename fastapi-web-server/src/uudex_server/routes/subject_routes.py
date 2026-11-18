@@ -104,7 +104,11 @@ async def create_subject(
         # Any failure, not only BrokerError, must remove the row: otherwise it is left with no
         # exchange behind it.
         _log.exception("Broker create_subject failed for subject %s", created_subject.subject_uuid)
-        await repo.delete(created_subject)
+        try:
+            await repo.delete(created_subject)
+        except Exception:
+            # The caller must still see the original failure, not the rollback's.
+            _log.exception("Rollback of subject %s failed", created_subject.subject_uuid)
         if isinstance(e, BrokerError):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

@@ -305,6 +305,47 @@ class TestOtherHandlersLog:
         assert len(records) == 1
         assert records[0].exc_info[1] is bug
 
+    async def test_create_rollback_failure_is_logged_and_original_error_raised(
+        self, session, admin_user, caplog
+    ):
+        subject = make_subject()
+        repo = make_repo(subject)
+        repo.delete.side_effect = RuntimeError("rollback failed")
+        broker = make_broker()
+        broker_error = BrokerError("exchange create refused")
+        broker.create_subject.side_effect = broker_error
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.__cause__ is broker_error
+        causes = [r.exc_info[1] for r in error_records(caplog)]
+        assert causes[0] is broker_error
+        assert isinstance(causes[1], RuntimeError)
+        assert "rollback" in error_records(caplog)[1].getMessage()
+        assert len(causes) == 2
+
+    async def test_create_rollback_failure_keeps_non_broker_error(
+        self, session, admin_user, caplog
+    ):
+        repo = make_repo(make_subject())
+        repo.delete.side_effect = RuntimeError("rollback failed")
+        broker = make_broker()
+        bug = ValueError("unexpected library bug")
+        broker.create_subject.side_effect = bug
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            pytest.raises(ValueError) as exc_info,
+        ):
+            await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
+
+        assert exc_info.value is bug
+
     async def test_publish_logs(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
         broker = make_broker()
