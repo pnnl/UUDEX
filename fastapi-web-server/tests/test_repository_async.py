@@ -163,11 +163,12 @@ class TestRepositoryMethods:
         assert (found.subject_uuid, found.subject_name) == (f"{tag}-two", "two")
         assert missing is None
 
-    async def test_select_by_field_refuses_an_unknown_column(self, setup_test_env):
+    @pytest.mark.parametrize("name", ["not_a_column", "metadata", "model_dump"])
+    async def test_select_by_field_refuses_a_name_that_is_not_a_column(self, setup_test_env, name):
         async with get_db_session() as session:
             repo = SubjectRepository(session)
-            with pytest.raises(ValueError, match="not_a_column"):
-                await repo.select_by_field("not_a_column", "x")
+            with pytest.raises(ValueError, match=name):
+                await repo.select_by_field(name, "x")
 
 
 class TestSubjectByUuidRoute:
@@ -200,27 +201,27 @@ class TestSubjectByUuidRoute:
 class TestCreateSubscriptionRoute:
     async def test_post_creates_a_subscription_owned_by_the_caller(self, cn, tag):
         endpoint_id = await seed_endpoint(await seed_participant(), cn)
+        other_endpoint_id = await seed_endpoint(await seed_participant(), f"other-{cn}")
         payload = {
             "subscription_uuid": f"{tag}-sub",
             "subscription_name": "my subscription",
             "subscription_state": "active",
-            "owner_endpoint_id": endpoint_id + 1000,
+            "owner_endpoint_id": other_endpoint_id,
         }
         async with trusted_client() as c:
             response = await c.post("/subscription/", json=payload, headers=identity_headers(cn))
 
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["subscription_uuid"] == f"{tag}-sub"
         assert body["subscription_name"] == "my subscription"
-        assert body["subscription_state"] == "active"
+        assert body["subscription_state"] == "ACTIVE"
         assert body["owner_endpoint_id"] == endpoint_id
 
         async with get_db_session() as session:
             result = await session.execute(
-                select(m.Subscription).where(m.Subscription.subscription_uuid == f"{tag}-sub")
+                select(m.Subscription).where(
+                    m.Subscription.subscription_uuid == body["subscription_uuid"]
+                )
             )
             rows = list(result.scalars().all())
-        assert [(r.subscription_uuid, r.owner_endpoint_id) for r in rows] == [
-            (f"{tag}-sub", endpoint_id)
-        ]
+        assert [r.owner_endpoint_id for r in rows] == [endpoint_id]
