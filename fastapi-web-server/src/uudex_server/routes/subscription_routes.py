@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -14,7 +15,10 @@ from uudex_server.models.message_models import (
 from uudex_server.models.subscription_models import SubscriptionCreate
 from uudex_server.models.subscription_subject_models import SubscriptionSubject
 from uudex_server.repos import subscription_and_subject_repositories as ssr
+from uudex_server.services.message_services.base import BrokerError
 from uudex_server.services.message_services.message_broker_common import message_broker_factory
+
+_log = logging.getLogger(__name__)
 
 subscriptions_router = APIRouter(prefix="/subscriptions")
 subscription_router = APIRouter(prefix="/subscription")
@@ -149,7 +153,12 @@ async def consume_messages(
 
         # Consume messages from this queue
         messages_to_get = min(messages_per_subject, remaining_messages)
-        raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        try:
+            raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        except BrokerError:
+            # A deleted queue stays named on its link; keep what earlier queues already gave up.
+            _log.exception("Broker failed to read queue %s", queue_name)
+            continue
 
         # Convert raw messages to MessageContent objects
         if raw_messages:

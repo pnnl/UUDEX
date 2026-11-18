@@ -83,3 +83,34 @@ class TestDeleteWithoutName:
         assert response.status_code == 400
         assert response.json()["detail"] == "Unsupported action: delete"
         broker.delete_queue.assert_not_called()
+
+
+class TestConsumeAfterQueueDelete:
+    async def test_a_missing_queue_does_not_lose_messages_already_read(self, tag):
+        participant, endpoint_id = await seed_owner(f"own-{tag}")
+        subscription_uuid = new_uuid()
+        subscription_id = await seed_subscription(endpoint_id, subscription_uuid)
+        gone, kept = f"q_legacy_{tag}_gone", f"q_legacy_{tag}_kept"
+        for name in (gone, kept):
+            subject = await seed_subject(new_uuid(), participant, name=name)
+            await seed_link(subject.subject_id, subscription_id, name)
+
+        def get_messages(queue: str, count: int = 1):
+            if queue == gone:
+                raise BrokerError("queue deleted")
+            return [{"payload": "p", "message_id": "m1"}]
+
+        broker = Mock()
+        broker.get_messages.side_effect = get_messages
+        async with client_with(broker) as c:
+            with patch.object(subscription_routes, "message_broker_factory", lambda _: broker):
+                response = await c.post(
+                    f"/subscription/{subscription_uuid}/consume",
+                    json={"count": 2, "timeout": 5},
+                    headers=identity_headers(f"own-{tag}"),
+                )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["total_consumed"] == 1
+        assert [msg["message_id"] for msg in body["messages"]] == ["m1"]
+        assert {call.args[0] for call in broker.get_messages.call_args_list} == {gone, kept}
