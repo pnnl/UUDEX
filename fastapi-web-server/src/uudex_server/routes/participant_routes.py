@@ -9,7 +9,10 @@ participant_router = APIRouter(prefix="/participant")
 
 
 @participants_router.get("/")
-async def get_all_participants(session: SessionDep, user: UserDep) -> list[Participant]:
+async def get_all_participants(
+    session: SessionDep,
+    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
+) -> list[Participant]:
     # Use the standalone function for async operations
     participants = await pr.select_all_participants(session=session)
     return list(participants)
@@ -17,7 +20,9 @@ async def get_all_participants(session: SessionDep, user: UserDep) -> list[Parti
 
 @participants_router.post("/", operation_id="create_participant")
 async def create_participant(
-    participant_create: ParticipantCreate, session: SessionDep, user: AdminUserDep
+    participant_create: ParticipantCreate,
+    session: SessionDep,
+    user: AdminUserDep,  # noqa: ARG001  (dependency enforces the administrator role)
 ) -> Participant:
     # Use the standalone function for async operations
     created_participant = await pr.create_participant(
