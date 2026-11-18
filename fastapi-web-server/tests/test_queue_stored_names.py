@@ -128,9 +128,17 @@ class TestLoader:
 class TestRenameDoesNotWidenOwnership:
     async def test_a_rename_to_another_subjects_name_does_not_reach_its_queue(self, tag, broker):
         p1, e1 = await seed_owner(f"p1-{tag}")
-        p2, e2 = await seed_owner(f"p2-{tag}")
-        a, _ = await seed_linked_subject(p1, e1, "feeder")
-        b, b_queue = await seed_linked_subject(p2, e2, "grid")
+        p2, _ = await seed_owner(f"p2-{tag}")
+        subscription_uuid = new_uuid()
+        subscription_id = await seed_subscription(e1, subscription_uuid)
+        a = await seed_subject(new_uuid(), p1, name="feeder")
+        b = await seed_subject(new_uuid(), p2, name="grid")
+        # B's stored name has the old name-based shape, which a renamed A would rebuild.
+        b_queue = f"q_uudex_grid_{subscription_uuid}"
+        await seed_link(
+            a.subject_id, subscription_id, queue_name(a.subject_uuid, subscription_uuid)
+        )
+        await seed_link(b.subject_id, subscription_id, b_queue)
         async with client_with(broker) as c:
             renamed = await c.put(
                 f"/subject/{a.subject_id}",
