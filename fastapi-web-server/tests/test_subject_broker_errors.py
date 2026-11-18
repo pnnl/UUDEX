@@ -25,6 +25,8 @@ from uudex_server.services.message_services.base import BrokerError
 from uudex_server.services.message_services.rabbit_mq import RabbitMqService
 
 ROUTES_LOGGER = "uudex_server.routes.subject_routes"
+# A canonical uuid: stored exchange names are only trusted when tied to one.
+SUBJ_UUID = "0b3f1c52-6a1e-4d0e-9b8e-3f2a7c9d4e11"
 
 
 @pytest.fixture
@@ -49,11 +51,13 @@ def session(admin_user):
 def make_subject(links=("sub-a", "sub-b")):
     return SimpleNamespace(
         subject_id=7,
-        subject_uuid="subj-uuid",
+        subject_uuid=SUBJ_UUID,
         subject_name="subj",
         owner_participant_id=1,
-        backing_exchange_name="e_subj_subj-uuid",
-        subscription_links=[SimpleNamespace(subscription_uuid=u) for u in links],
+        backing_exchange_name=f"e_{SUBJ_UUID}",
+        subscription_links=[
+            SimpleNamespace(subscription_uuid=u, backing_queue_name=f"q_{u}") for u in links
+        ],
     )
 
 
@@ -62,22 +66,29 @@ def make_broker():
     broker.build_queue_name = Mock(
         side_effect=lambda tag, subject_name, subscription_uuid: f"q_{subscription_uuid}"
     )
-    broker.build_exchange_name = Mock(return_value="e_subj_subj-uuid")
     return broker
 
 
 def make_repo(subject):
     repo = Mock()
     repo.select_by_field = AsyncMock(return_value=subject)
+    repo.select_by_uuid_with_links = AsyncMock(return_value=subject)
     repo.create = AsyncMock(return_value=subject)
     # Mirrors Repository.delete, which reads the id fields off the object it is given.
-    repo.delete = AsyncMock(side_effect=lambda obj: obj.subject_id)
+    repo.delete = AsyncMock(side_effect=lambda obj, **_kwargs: obj.subject_id)
     return repo
+
+
+def unshared_queues():
+    """Patch the link repository so the delete path finds no other subject storing the name."""
+    link_repo = Mock()
+    link_repo.count_other_subjects_storing_queue = AsyncMock(return_value=0)
+    return patch.object(subject_routes.pr, "SubscriptionSubjectRepository", return_value=link_repo)
 
 
 def make_subject_create():
     return SubjectCreate(
-        subject_uuid="subj-uuid",
+        subject_uuid=SUBJ_UUID,
         subject_name="subj",
         dataset_instance_key="k",
         subscription_type="pull",
@@ -86,7 +97,7 @@ def make_subject_create():
         max_queue_size_kb=None,
         max_message_count=None,
         priority=None,
-        backing_exchange_name="e_subj_subj-uuid",
+        backing_exchange_name=f"e_{SUBJ_UUID}",
         owner_participant_id=1,
         dataset_definition_id=1,
     )
@@ -97,10 +108,6 @@ def error_records(caplog):
 
 
 class TestRealRepository:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="#67: Repository.delete calls session.exec, which AsyncSession does not have",
-    )
     async def test_single_delete_removes_the_row(self, setup_test_env, admin_user):
         async with get_db_session() as session:
             repo = subject_routes.pr.SubjectRepository(session)
@@ -132,7 +139,7 @@ class TestLibraryTextStaysOutOfResponses:
     async def test_create(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
         broker = make_broker()
-        broker.create_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+        broker.create_exchange.side_effect = BrokerError(SECRET_ERROR_TEXT)
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -145,7 +152,7 @@ class TestLibraryTextStaysOutOfResponses:
     async def test_single_delete(self, session, admin_user, caplog):
         subject = make_subject()
         broker = make_broker()
-        broker.delete_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+        broker.delete_exchange.side_effect = BrokerError(SECRET_ERROR_TEXT)
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=make_repo(subject)),
@@ -169,7 +176,7 @@ class TestLibraryTextStaysOutOfResponses:
             pytest.raises(HTTPException) as exc_info,
         ):
             await subject_routes.publish_messages_to_subject(
-                "subj-uuid", MessagePublishRequest(messages=["m"]), session, admin_user, broker
+                SUBJ_UUID, MessagePublishRequest(messages=["m"]), session, admin_user, broker
             )
 
         assert exc_info.value.detail == "Failed to publish messages"
@@ -177,13 +184,13 @@ class TestLibraryTextStaysOutOfResponses:
 
     async def test_bulk_delete_broker_error(self, session, admin_user, caplog):
         broker = make_broker()
-        broker.delete_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+        broker.delete_exchange.side_effect = BrokerError(SECRET_ERROR_TEXT)
 
         with patch.object(
             subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
         ):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="delete"),
                 session,
                 admin_user,
                 broker,
@@ -193,11 +200,11 @@ class TestLibraryTextStaysOutOfResponses:
 
     async def test_bulk_unexpected_error(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
-        repo.select_by_field.side_effect = RuntimeError(SECRET_ERROR_TEXT)
+        repo.select_by_uuid_with_links.side_effect = RuntimeError(SECRET_ERROR_TEXT)
 
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="delete"),
                 session,
                 admin_user,
                 make_broker(),
@@ -209,12 +216,15 @@ class TestLibraryTextStaysOutOfResponses:
         broker = make_broker()
         broker.delete_queue.side_effect = RuntimeError(SECRET_ERROR_TEXT)
 
-        with patch.object(
-            subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+        with (
+            patch.object(
+                subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+            ),
+            unshared_queues(),
         ):
             result = await subject_routes.manage_subject_queues(
-                "subj-uuid",
-                QueueManagementRequest(action="delete", queue_name="q"),
+                SUBJ_UUID,
+                QueueManagementRequest(action="delete", queue_name="q_sub-a"),
                 session,
                 admin_user,
                 broker,
@@ -231,11 +241,11 @@ class TestBulkDelete:
         subject = make_subject()
         repo = make_repo(subject)
         broker = make_broker()
-        broker.delete_subject.side_effect = BrokerError("exchange delete refused")
+        broker.delete_exchange.side_effect = BrokerError("exchange delete refused")
 
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="delete"),
                 session,
                 admin_user,
                 broker,
@@ -243,12 +253,14 @@ class TestBulkDelete:
 
         assert result.successful == []
         assert len(result.failed) == 1
-        assert result.failed[0]["subject_uuid"] == "subj-uuid"
+        assert result.failed[0]["subject_uuid"] == SUBJ_UUID
         assert result.failed[0]["error"] == "Broker delete failed"
-        repo.delete.assert_not_called()
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
-        assert "subj-uuid" in records[0].getMessage()
+        assert SUBJ_UUID in records[0].getMessage()
         assert isinstance(records[0].exc_info[1], BrokerError)
 
     async def test_success_response_is_unchanged(self, session, admin_user, caplog):
@@ -258,16 +270,17 @@ class TestBulkDelete:
 
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="delete"),
                 session,
                 admin_user,
                 broker,
             )
 
-        assert result.successful == ["subj-uuid"]
+        assert result.successful == [SUBJ_UUID]
         assert result.failed == []
         assert result.total_processed == 1
-        repo.delete.assert_awaited_once_with(subject)
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.commit.assert_awaited_once()
         assert error_records(caplog) == []
 
     async def test_non_broker_error_is_logged_and_reported(self, session, admin_user, caplog):
@@ -277,13 +290,13 @@ class TestBulkDelete:
 
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="delete"),
                 session,
                 admin_user,
                 make_broker(),
             )
 
-        assert result.failed == [{"subject_uuid": "subj-uuid", "error": "Operation failed"}]
+        assert result.failed == [{"subject_uuid": SUBJ_UUID, "error": "Operation failed"}]
         records = error_records(caplog)
         assert len(records) == 1
         assert isinstance(records[0].exc_info[1], RuntimeError)
@@ -298,9 +311,12 @@ class TestBulkPurge:
         broker = make_broker()
         broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="purge_queues"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="purge_queues"),
                 session,
                 admin_user,
                 broker,
@@ -308,7 +324,7 @@ class TestBulkPurge:
 
         assert result.successful == []
         assert result.failed == [
-            {"subject_uuid": "subj-uuid", "error": "Failed to purge queues: q_sub-a"}
+            {"subject_uuid": SUBJ_UUID, "error": "Failed to purge queues: q_sub-a"}
         ]
         assert [c.args[0] for c in broker.delete_queue.call_args_list] == ["q_sub-a", "q_sub-b"]
         records = error_records(caplog)
@@ -319,15 +335,18 @@ class TestBulkPurge:
     async def test_success_response_is_unchanged(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.bulk_subject_operations(
-                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="purge_queues"),
+                BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="purge_queues"),
                 session,
                 admin_user,
                 make_broker(),
             )
 
-        assert result.successful == ["subj-uuid"]
+        assert result.successful == [SUBJ_UUID]
         assert result.failed == []
         assert error_records(caplog) == []
 
@@ -340,7 +359,7 @@ class TestOtherHandlersLog:
         repo = make_repo(subject)
         broker = make_broker()
         broker_error = BrokerError("exchange delete refused")
-        broker.delete_subject.side_effect = broker_error
+        broker.delete_exchange.side_effect = broker_error
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -354,10 +373,12 @@ class TestOtherHandlersLog:
         assert exc_info.value.status_code == 500
         assert exc_info.value.__cause__ is broker_error
         assert exc_info.value.detail == "Failed to delete message broker infrastructure"
-        repo.delete.assert_not_called()
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
-        assert "subj-uuid" in records[0].getMessage()
+        assert SUBJ_UUID in records[0].getMessage()
         assert isinstance(records[0].exc_info[1], BrokerError)
 
     async def test_single_delete_success_deletes_row(self, session, admin_user, caplog):
@@ -373,7 +394,8 @@ class TestOtherHandlersLog:
             result = await subject_routes.delete_subject(7, session, admin_user, make_broker())
 
         assert result == {"message": "Subject deleted successfully", "subject_id": 7}
-        repo.delete.assert_awaited_once_with(subject)
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.commit.assert_awaited_once()
         assert error_records(caplog) == []
 
     async def test_create_logs_and_rolls_back(self, session, admin_user, caplog):
@@ -381,7 +403,7 @@ class TestOtherHandlersLog:
         repo = make_repo(subject)
         broker = make_broker()
         broker_error = BrokerError("exchange create refused")
-        broker.create_subject.side_effect = broker_error
+        broker.create_exchange.side_effect = broker_error
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
             pytest.raises(HTTPException) as exc_info,
@@ -401,7 +423,7 @@ class TestOtherHandlersLog:
         repo = make_repo(subject)
         broker = make_broker()
         bug = RuntimeError("unexpected library bug")
-        broker.create_subject.side_effect = bug
+        broker.create_exchange.side_effect = bug
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -423,7 +445,7 @@ class TestOtherHandlersLog:
         repo.delete.side_effect = RuntimeError("rollback failed")
         broker = make_broker()
         broker_error = BrokerError("exchange create refused")
-        broker.create_subject.side_effect = broker_error
+        broker.create_exchange.side_effect = broker_error
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -446,7 +468,7 @@ class TestOtherHandlersLog:
         repo.delete.side_effect = RuntimeError("rollback failed")
         broker = make_broker()
         bug = ValueError("unexpected library bug")
-        broker.create_subject.side_effect = bug
+        broker.create_exchange.side_effect = bug
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -466,7 +488,7 @@ class TestOtherHandlersLog:
             pytest.raises(HTTPException) as exc_info,
         ):
             await subject_routes.publish_messages_to_subject(
-                "subj-uuid", MessagePublishRequest(messages=["m"]), session, admin_user, broker
+                SUBJ_UUID, MessagePublishRequest(messages=["m"]), session, admin_user, broker
             )
 
         assert exc_info.value.status_code == 500
@@ -479,9 +501,12 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = BrokerError("queue gone")
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
-                "subj-uuid", QueueManagementRequest(action="purge"), session, admin_user, broker
+                SUBJ_UUID, QueueManagementRequest(action="purge"), session, admin_user, broker
             )
 
         assert result.success is False
@@ -498,9 +523,12 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
-                "subj-uuid", QueueManagementRequest(action="purge"), session, admin_user, broker
+                SUBJ_UUID, QueueManagementRequest(action="purge"), session, admin_user, broker
             )
 
         assert result.success is False
@@ -510,9 +538,12 @@ class TestOtherHandlersLog:
     async def test_single_purge_success_response_is_unchanged(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
-                "subj-uuid",
+                SUBJ_UUID,
                 QueueManagementRequest(action="purge"),
                 session,
                 admin_user,
@@ -529,10 +560,13 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = RuntimeError("boom")
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
-                "subj-uuid",
-                QueueManagementRequest(action="delete", queue_name="q"),
+                SUBJ_UUID,
+                QueueManagementRequest(action="delete", queue_name="q_sub-a"),
                 session,
                 admin_user,
                 broker,
@@ -548,16 +582,11 @@ BROKER_URL = "amqp://host:15672?username=u&password=p"
 
 # One call per decorated RabbitMqService method, with arguments that reach the HTTP layer.
 BROKER_CALLS = {
-    "create_subscription_subject": ("sub-uuid", "subj-uuid", "subj", "tag"),
-    "create_subscription_subject_with_performance_constraints": (
-        "sub-uuid",
-        "subj-uuid",
-        "subj",
-        "tag",
-    ),
-    "delete_subscription_subject": ("sub-uuid", "subj", "tag"),
-    "create_subject": ("subj", "subj-uuid"),
-    "delete_subject": ("subj", "subj-uuid"),
+    "create_subscription_subject": ("q_x", "e_x"),
+    "create_subscription_subject_with_performance_constraints": ("q_x", "e_x"),
+    "delete_subscription_subject": ("q_x",),
+    "create_exchange": ("e_x",),
+    "delete_exchange": ("e_x",),
     "delete_queue": ("q",),
     "publish_message": ("e_subj", "key", "payload"),
     "get_messages": ("q",),
@@ -620,7 +649,7 @@ class TestRabbitMqErrorTranslation:
             service = RabbitMqService(BROKER_URL)
 
         with pytest.raises(type(bug)) as exc_info:
-            service.delete_subject("subj", "subj-uuid")
+            service.delete_exchange("e_x")
 
         assert exc_info.value is bug
 

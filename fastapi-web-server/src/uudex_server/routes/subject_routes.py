@@ -3,6 +3,8 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from uudex_server.core import get_settings
 from uudex_server.core.dependencies import SessionDep, UserDep
@@ -20,7 +22,13 @@ from uudex_server.models.subject_models import (
 )
 from uudex_server.repos import subscription_and_subject_repositories as pr
 from uudex_server.services.message_services import create_broker_service
-from uudex_server.services.message_services.base import BrokerError, UUDEXBrokerService
+from uudex_server.services.message_services.base import (
+    BrokerError,
+    UntrustedBrokerName,
+    UUDEXBrokerService,
+    exchange_name,
+    trusted_exchange_name,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -73,20 +81,16 @@ async def create_subject(
     endpoint = await session.merge(user.endpoint)
     participant_id = endpoint.participant_id
 
-    # Auto-generate UUID if not provided
-    if not subject_data.subject_uuid:
-        subject_data.subject_uuid = str(uuid.uuid4())
+    # The server owns the uuid: a client-chosen one could alias another subject's exchange.
+    subject_data.subject_uuid = str(uuid.uuid4())
 
     # Set required fields from context
     subject_data.owner_participant_id = participant_id
     if not subject_data.dataset_definition_id:
         subject_data.dataset_definition_id = 1  # Default dataset definition
 
-    # Set backing exchange name if not provided
-    if not subject_data.backing_exchange_name:
-        subject_data.backing_exchange_name = (
-            f"e_{subject_data.subject_name}_{subject_data.subject_uuid}"
-        )
+    # Minted once here and stored; publish and delete read it back from the row.
+    subject_data.backing_exchange_name = exchange_name(subject_data.subject_uuid)
 
     # Create subject in database
     subject_dict = subject_data.model_dump()
@@ -97,13 +101,11 @@ async def create_subject(
 
     try:
         # Create message broker infrastructure
-        broker.create_subject(
-            subject_name=created_subject.subject_name, subject_uuid=created_subject.subject_uuid
-        )
+        broker.create_exchange(created_subject.backing_exchange_name)
     except Exception as e:
         # Any failure, not only BrokerError, must remove the row: otherwise it is left with no
         # exchange behind it.
-        _log.exception("Broker create_subject failed for subject %s", created_subject.subject_uuid)
+        _log.exception("Broker create_exchange failed for subject %s", created_subject.subject_uuid)
         try:
             await repo.delete(created_subject)
         except Exception:
@@ -226,22 +228,35 @@ async def delete_subject(
                 detail="Not authorized to delete this subject",
             )
 
+    # The row goes first, uncommitted: a subject still linked to a subscription fails here,
+    # before the exchange is touched.
+    # A rollback expires the loaded row, so read what the handlers below need first.
+    subject_uuid = existing_subject.subject_uuid
+    exchange = _exchange_to_delete(existing_subject)
     try:
-        # Delete message broker infrastructure first
-        broker.delete_subject(
-            subject_name=existing_subject.subject_name, subject_uuid=existing_subject.subject_uuid
-        )
+        await repo.delete(existing_subject, commit=False)
+    except IntegrityError as e:
+        await session.rollback()
+        _log.warning("Subject %s not deleted: still linked", subject_uuid)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Subject is still linked to a subscription",
+        ) from e
+
+    try:
+        if exchange is not None:
+            broker.delete_exchange(exchange)
     except BrokerError as e:
-        # Keep the row, as the bulk delete does, so the subject stays visible and the delete can
-        # be retried instead of orphaning the exchange. 500 matches create_subject and publish.
-        _log.exception("Broker delete_subject failed for subject %s", existing_subject.subject_uuid)
+        # Roll the row back so the subject stays visible and the delete can be retried instead
+        # of orphaning the exchange. 500 matches create_subject and publish.
+        await session.rollback()
+        _log.exception("Broker delete_exchange failed for subject %s", subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete message broker infrastructure",
         ) from e
 
-    # Delete from database
-    await repo.delete(existing_subject)
+    await session.commit()
 
     return {"message": "Subject deleted successfully", "subject_id": subject_id}
 
@@ -348,6 +363,8 @@ async def publish_messages_to_subject(
                 detail="Not authorized to publish to this subject",
             )
 
+    exchange = _trusted_exchange_or_409(subject)
+
     # Publish messages to the subject's exchange
     message_ids = []
     published_count = 0
@@ -359,7 +376,7 @@ async def publish_messages_to_subject(
 
             # Publish to broker
             result = broker.publish_message(
-                subject_exchange=subject.backing_exchange_name,
+                subject_exchange=exchange,
                 routing_key="",  # Fanout exchange doesn't use routing keys
                 payload=message_payload,
                 payload_enc=publish_request.payload_encoding,
@@ -391,10 +408,7 @@ async def publish_messages_to_subject(
 
 @subject_router.get("/{subject_uuid}/queue-info", operation_id="get_subject_queue_info")
 async def get_subject_queue_info(
-    subject_uuid: str,
-    session: SessionDep,
-    user: UserDep,
-    broker: UUDEXBrokerService = Depends(get_broker_service),
+    subject_uuid: str, session: SessionDep, user: UserDep
 ) -> SubjectQueueInfo:
     """
     Get detailed queue information for a subject.
@@ -415,7 +429,7 @@ async def get_subject_queue_info(
                 detail="Not authorized to view queue info for this subject",
             )
 
-    return await _get_subject_queue_info(subject, broker)
+    return await _get_subject_queue_info(subject, _trusted_exchange_or_409(subject))
 
 
 @subject_router.post("/{subject_uuid}/queue-management", operation_id="manage_subject_queues")
@@ -436,7 +450,7 @@ async def manage_subject_queues(
     """
     # Get subject and verify authorization
     repo = pr.SubjectRepository(session)
-    subject = await repo.select_by_field("subject_uuid", subject_uuid)
+    subject = await repo.select_by_uuid_with_links(subject_uuid)
 
     if subject is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
@@ -450,9 +464,15 @@ async def manage_subject_queues(
                 detail="Not authorized to manage queues for this subject",
             )
 
+    # Outside the try below, which turns every exception into a 200 with success False.
+    info_exchange = _trusted_exchange_or_409(subject) if queue_request.action == "info" else ""
+
+    if queue_request.action == "delete" and queue_request.queue_name:
+        await _require_owned_queue(session, subject, queue_request.queue_name)
+
     try:
         if queue_request.action == "info":
-            queue_info = await _get_subject_queue_info(subject, broker)
+            queue_info = await _get_subject_queue_info(subject, info_exchange)
             return QueueManagementResponse(
                 success=True,
                 message="Queue information retrieved successfully",
@@ -465,12 +485,12 @@ async def manage_subject_queues(
             # This requires getting all subscription-subject relationships
             purged_queues = []
             failed_queues = []
+            shared = await _queues_shared_with_other_subjects(session, subject)
             for sub_link in subject.subscription_links:
-                queue_name = broker.build_queue_name(
-                    tag="uudex",
-                    subject_name=subject.subject_name,
-                    subscription_uuid=sub_link.subscription_uuid,
-                )
+                queue_name = sub_link.backing_queue_name
+                if queue_name in shared:
+                    failed_queues.append(queue_name)
+                    continue
                 try:
                     # Note: RabbitMQ service has purge_queue method, but it's not in base class
                     # For now, we'll try to delete and recreate
@@ -486,6 +506,7 @@ async def manage_subject_queues(
                     message=(
                         f"Purged {len(purged_queues)} queues; "
                         f"failed to purge: {', '.join(failed_queues)}"
+                        f"{_shared_reason(shared)}"
                     ),
                     queue_info={"purged_queues": purged_queues, "failed_queues": failed_queues},
                     timestamp=datetime.utcnow(),
@@ -514,6 +535,8 @@ async def manage_subject_queues(
                 detail=f"Unsupported action: {queue_request.action}",
             )
 
+    except HTTPException:
+        raise
     except Exception:
         # Wraps repository and model code as well as the broker, so it cannot name BrokerError.
         _log.exception("Queue management action %s failed", queue_request.action)
@@ -556,36 +579,49 @@ async def bulk_subject_operations(
 
     for subject_uuid in bulk_request.subject_uuids:
         try:
-            subject = await repo.select_by_field("subject_uuid", subject_uuid)
+            subject = await repo.select_by_uuid_with_links(subject_uuid)
             if subject is None:
                 failed.append({"subject_uuid": subject_uuid, "error": "Subject not found"})
                 continue
 
             if bulk_request.operation == "delete":
-                # Delete subject and its infrastructure
-                # Keep the database row when the exchange delete fails, so the subject stays
-                # visible and the delete can be retried instead of orphaning the exchange.
+                exchange = _exchange_to_delete(subject)
+                # Row first, uncommitted, as in the single delete: a linked subject fails
+                # before the exchange is touched, and a broker failure rolls the row back.
                 try:
-                    broker.delete_subject(
-                        subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
+                    await repo.delete(subject, commit=False)
+                except IntegrityError:
+                    await session.rollback()
+                    _log.warning("Subject %s not deleted: still linked", subject_uuid)
+                    failed.append(
+                        {
+                            "subject_uuid": subject_uuid,
+                            "error": "Subject is still linked to a subscription",
+                        }
                     )
+                    continue
+
+                try:
+                    if exchange is not None:
+                        broker.delete_exchange(exchange)
                 except BrokerError:
-                    _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
+                    await session.rollback()
+                    _log.exception("Broker delete_exchange failed for subject %s", subject_uuid)
                     failed.append({"subject_uuid": subject_uuid, "error": "Broker delete failed"})
                     continue
 
-                await repo.delete(subject)
+                await session.commit()
                 successful.append(subject_uuid)
 
             elif bulk_request.operation == "purge_queues":
                 # Purge all queues for the subject
                 failed_queues = []
+                shared = await _queues_shared_with_other_subjects(session, subject)
                 for sub_link in subject.subscription_links:
-                    queue_name = broker.build_queue_name(
-                        tag="uudex",
-                        subject_name=subject.subject_name,
-                        subscription_uuid=sub_link.subscription_uuid,
-                    )
+                    queue_name = sub_link.backing_queue_name
+                    if queue_name in shared:
+                        failed_queues.append(queue_name)
+                        continue
                     # Continue with other queues
                     try:
                         broker.delete_queue(queue_name)
@@ -597,7 +633,10 @@ async def bulk_subject_operations(
                     failed.append(
                         {
                             "subject_uuid": subject_uuid,
-                            "error": f"Failed to purge queues: {', '.join(failed_queues)}",
+                            "error": (
+                                f"Failed to purge queues: {', '.join(failed_queues)}"
+                                f"{_shared_reason(shared)}"
+                            ),
                         }
                     )
                 else:
@@ -616,6 +655,7 @@ async def bulk_subject_operations(
             _log.exception(
                 "Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid
             )
+            await session.rollback()
             failed.append({"subject_uuid": subject_uuid, "error": "Operation failed"})
 
     return BulkOperationResult(
@@ -631,13 +671,83 @@ async def bulk_subject_operations(
 # =====================================================
 
 
-async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) -> SubjectQueueInfo:
+async def _require_owned_queue(session: AsyncSession, subject: Subject, queue_name: str) -> None:
+    """Raise unless `queue_name` is stored on one of the subject's own links.
+
+    Raised outside the caller's try, whose catch-all would turn it into a 200 failure body. An
+    unowned name gets the unknown-subject answer so it does not confirm the queue exists.
+    """
+    if queue_name not in {link.backing_queue_name for link in subject.subscription_links}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
+    shared = await pr.SubscriptionSubjectRepository(session).count_other_subjects_storing_queue(
+        queue_name, subject.subject_id
+    )
+    if shared:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Queue is shared with another subject"
+        )
+
+
+async def _queues_shared_with_other_subjects(session: AsyncSession, subject: Subject) -> set[str]:
+    """The stored queue names on `subject`'s links that another subject's link also stores.
+
+    Delete refuses these with 409; purge must not delete them either, since the other subject
+    still reads from the queue.
+    """
+    links = pr.SubscriptionSubjectRepository(session)
+    return {
+        link.backing_queue_name
+        for link in subject.subscription_links
+        if await links.count_other_subjects_storing_queue(
+            link.backing_queue_name, subject.subject_id
+        )
+    }
+
+
+def _shared_reason(shared: set[str]) -> str:
+    """Message suffix naming the queues a purge skipped because another subject stores them."""
+    if not shared:
+        return ""
+    return f"; shared with another subject, not purged: {', '.join(sorted(shared))}"
+
+
+def _trusted_exchange_or_409(subject: Subject) -> str:
+    """The subject's stored exchange, or 409 when the row's name cannot be trusted.
+
+    Call only after the caller is authorized, so the answer reveals nothing about a row the
+    caller cannot see.
+    """
+    try:
+        return trusted_exchange_name(subject)
+    except UntrustedBrokerName as e:
+        _log.warning("Subject %s has an untrusted exchange name: %s", subject.subject_uuid, e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Subject broker name needs repair"
+        ) from e
+
+
+def _exchange_to_delete(subject: Subject) -> str | None:
+    """The stored exchange to delete, or None when the name is untrusted.
+
+    The named exchange may belong to another subject, so an untrusted row is deleted without
+    touching the broker.
+    """
+    try:
+        return trusted_exchange_name(subject)
+    except UntrustedBrokerName as e:
+        _log.warning(
+            "Subject %s deleted without a broker call: %s; stored exchange %r",
+            subject.subject_uuid,
+            e,
+            subject.backing_exchange_name,
+        )
+        return None
+
+
+async def _get_subject_queue_info(subject: Subject, exchange: str) -> SubjectQueueInfo:
     """
     Helper function to get queue information for a subject.
     """
-    # Get basic queue information
-    exchange_name = broker.build_exchange_name(subject.subject_name, subject.subject_uuid)
-
     # Count queues and messages (this is a simplified implementation)
     # In a real implementation, you would query the message broker for detailed stats
     queue_count = len(subject.subscription_links)
@@ -647,7 +757,7 @@ async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) 
     return SubjectQueueInfo(
         subject_uuid=subject.subject_uuid,
         subject_name=subject.subject_name,
-        exchange_name=exchange_name,
+        exchange_name=exchange,
         queue_count=queue_count,
         total_messages=total_messages,
         total_consumers=total_consumers,

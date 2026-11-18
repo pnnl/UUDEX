@@ -222,8 +222,6 @@ _NO_CALLER = {
     ("GET", "/"): "public root page",
     ("GET", "/docs"): "framework API docs",
     ("GET", "/openapi.json"): "framework API schema",
-    ("GET", "/participants/"): "known gap, tracked in #48",
-    ("POST", "/participants/"): "known gap, tracked in #48",
     ("GET", "/subscription/{subscription_uuid}"): "known gap, tracked in #48",
 }
 

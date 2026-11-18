@@ -1,8 +1,10 @@
+import logging
+import uuid
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from uudex_server.core.dependencies import SessionDep, UserDep
+from uudex_server.core.dependencies import SessionDep, UserDep, get_admin_user
 from uudex_server.core.settings import get_settings
 from uudex_server.models import Subscription
 from uudex_server.models.message_models import (
@@ -13,7 +15,10 @@ from uudex_server.models.message_models import (
 from uudex_server.models.subscription_models import SubscriptionCreate
 from uudex_server.models.subscription_subject_models import SubscriptionSubject
 from uudex_server.repos import subscription_and_subject_repositories as ssr
+from uudex_server.services.message_services.base import BrokerError
 from uudex_server.services.message_services.message_broker_common import message_broker_factory
+
+_log = logging.getLogger(__name__)
 
 subscriptions_router = APIRouter(prefix="/subscriptions")
 subscription_router = APIRouter(prefix="/subscription")
@@ -40,11 +45,12 @@ async def get_subscription_subjects(
     return subscription_subjects
 
 
-@subscriptions_router.get("/admin", operation_id="get_admin_subscriptions")
-async def get_admin_subscriptions(
-    session: SessionDep,
-    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
-) -> list[Subscription]:
+@subscriptions_router.get(
+    "/admin",
+    operation_id="get_admin_subscriptions",
+    dependencies=[Depends(get_admin_user)],
+)
+async def get_admin_subscriptions(session: SessionDep) -> list[Subscription]:
     repo = ssr.SubscriptionRepository(session)
     return await repo.select_admin_subscriptions()
 
@@ -59,10 +65,17 @@ async def get_user_subscriptions(session: SessionDep, user: UserDep) -> list[Sub
 async def create_subscription(
     subscription: SubscriptionCreate, session: SessionDep, user: UserDep
 ) -> Subscription:
-    # TODO: Implement create_subscription method in repository
-    # For now, use a direct creation approach
-    sub: Subscription = await ssr.create_subscription(
-        session=session, user=user, subscription_add=subscription
+    # The caller owns what they create, and the server picks the uuid: neither the owner nor
+    # the uuid named in the body is trusted.
+    endpoint = await session.merge(user.endpoint)
+    fields = subscription.model_dump(exclude={"owner_endpoint_id", "subscription_uuid"})
+    repo = ssr.SubscriptionRepository(session)
+    sub: Subscription = await repo.create(
+        Subscription(
+            **fields,
+            subscription_uuid=str(uuid.uuid4()),
+            owner_endpoint_id=endpoint.endpoint_id,
+        )
     )
     return sub
 
@@ -137,16 +150,27 @@ async def consume_messages(
         if remaining_messages <= 0:
             break
 
-        # Build queue name using the same pattern as creation
-        queue_name = broker_service.build_queue_name(
-            tag="uudex",  # Default tag used in UUDEX
-            subject_name=sub_subject.subject.subject_name,
-            subscription_uuid=subscription_uuid,
-        )
+        queue_name = sub_subject.backing_queue_name
 
         # Consume messages from this queue
         messages_to_get = min(messages_per_subject, remaining_messages)
-        raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        try:
+            raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        except BrokerError as e:
+            if e.status_code == status.HTTP_404_NOT_FOUND:
+                # A deleted queue stays named on its link; skip only that, not a broker failure.
+                _log.warning("Skipping queue %s: the broker reports it does not exist", queue_name)
+                continue
+            _log.exception("Broker failed to read queue %s", queue_name)
+            if all_messages:
+                # Reads are destructive, so failing now would lose these; the next call surfaces
+                # the failure.
+                break
+            # 502: the broker is an upstream that failed, not a fault in this server.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Message broker unavailable",
+            ) from e
 
         # Convert raw messages to MessageContent objects
         if raw_messages:

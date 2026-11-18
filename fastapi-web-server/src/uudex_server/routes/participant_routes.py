@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from uudex_server.core.dependencies import SessionDep
+from uudex_server.core.dependencies import AdminUserDep, SessionDep, UserDep
 from uudex_server.models.participant_models import Participant, ParticipantCreate
 from uudex_server.repos import participant_repositories as pr
 
@@ -9,7 +9,10 @@ participant_router = APIRouter(prefix="/participant")
 
 
 @participants_router.get("/")
-async def get_all_participants(session: SessionDep) -> list[Participant]:
+async def get_all_participants(
+    session: SessionDep,
+    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
+) -> list[Participant]:
     # Use the standalone function for async operations
     participants = await pr.select_all_participants(session=session)
     return list(participants)
@@ -17,7 +20,9 @@ async def get_all_participants(session: SessionDep) -> list[Participant]:
 
 @participants_router.post("/", operation_id="create_participant")
 async def create_participant(
-    participant_create: ParticipantCreate, session: SessionDep
+    participant_create: ParticipantCreate,
+    session: SessionDep,
+    user: AdminUserDep,  # noqa: ARG001  (dependency enforces the administrator role)
 ) -> Participant:
     # Use the standalone function for async operations
     created_participant = await pr.create_participant(

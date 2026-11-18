@@ -66,7 +66,8 @@ def _raises_broker_error(method: Callable[_P, _R]) -> Callable[_P, _R]:
         try:
             return method(*args, **kwargs)
         except _LIBRARY_ERRORS as e:
-            raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}") from e
+            status_code = e.status if isinstance(e, pyrabbit_http.HTTPError) else None
+            raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}", status_code) from e
 
     return wrapper
 
@@ -95,11 +96,8 @@ class RabbitMqService(UUDEXBrokerService):
         return hostname, parms.get("username")[0], parms.get("password")[0]
 
     @_raises_broker_error
-    def create_subscription_subject(self, subscription_uuid, subject_uuid, subject_name, tag):
-        queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
+    def create_subscription_subject(self, queue_name, exchange_name):
         self._client.create_queue("/", queue_name, auto_delete=False, durable=True, exclusive=False)
-
-        exchange_name = self.build_exchange_name(subject_name, subject_uuid)
         self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
@@ -107,15 +105,12 @@ class RabbitMqService(UUDEXBrokerService):
     @_raises_broker_error
     def create_subscription_subject_with_performance_constraints(
         self,
-        subscription_uuid,
-        subject_uuid,
-        subject_name,
-        tag,
+        queue_name,
+        exchange_name,
         max_queue_size_kb=None,
         max_message_count=None,
         full_queue_behavior="NO_CONSTRAINT",
     ):
-        queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
         kwargs = {}
         kwargs["arguments"] = {}
         if full_queue_behavior == "PURGE_OLD":
@@ -144,27 +139,23 @@ class RabbitMqService(UUDEXBrokerService):
             self._client.create_queue(
                 "/", queue_name, auto_delete=False, durable=True, exclusive=False
             )
-        exchange_name = self.build_exchange_name(subject_name, subject_uuid)
         self._client.create_binding("/", exchange_name, queue_name, "")
 
         return queue_name
 
     @_raises_broker_error
-    def delete_subscription_subject(self, subscription_uuid, subject_name, tag):
-        queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
+    def delete_subscription_subject(self, queue_name):
         self._client.purge_queue("/", queue_name)
         rc = self._client.delete_queue("/", queue_name)
         return rc
 
     @_raises_broker_error
-    def create_subject(self, subject_name, subject_uuid):
-        exchange_name = self.build_exchange_name(subject_name, subject_uuid)
+    def create_exchange(self, exchange_name):
         rc = self._client.create_exchange("/", exchange_name, "fanout", False, True, False)
         return rc
 
     @_raises_broker_error
-    def delete_subject(self, subject_name, subject_uuid):
-        exchange_name = self.build_exchange_name(subject_name, subject_uuid)
+    def delete_exchange(self, exchange_name):
         rc = self._client.delete_exchange("/", exchange_name)
         return rc
 
