@@ -12,6 +12,7 @@ from test_repository_async import seed_endpoint, seed_participant
 from test_subject_subscription_hardening import (
     client_with,
     create_body,
+    seed_subject,
     stored_subject,
 )
 from uudex_server.services.database_service import get_db_session
@@ -55,6 +56,57 @@ async def subject_rows(subject_uuid: str) -> list[m.Subject]:
             select(m.Subject).where(m.Subject.subject_uuid == subject_uuid)
         )
         return list(result.scalars().all())
+
+
+def all_broker_calls_text(broker: Mock) -> str:
+    return repr(broker.mock_calls)
+
+
+class TestSubjectUuidIsServerOwned:
+    async def test_a_body_uuid_cannot_alias_another_subjects_exchange(self, tag, broker):
+        victim_uuid = new_uuid()
+        await seed_owner(tag)
+        victim = await seed_subject(victim_uuid, await seed_participant(), name="feeder_7")
+        attack = f"7_{victim_uuid}"
+        headers = identity_headers(f"own-{tag}")
+
+        async with client_with(broker) as c:
+            created = await c.post(
+                "/subjects/", json=create_body("feeder", attack), headers=headers
+            )
+            assert created.status_code == 200, created.text
+            body = created.json()
+            published = await c.post(
+                f"/subjects/{body['subject_uuid']}/publish",
+                json={"messages": ["a"]},
+                headers=headers,
+            )
+            deleted = await c.delete(f"/subject/{body['subject_id']}", headers=headers)
+
+        minted = body["subject_uuid"]
+        assert minted != attack
+        assert str(uuid.UUID(minted)) == minted
+        assert body["backing_exchange_name"] == f"e_{minted}"
+        assert body["backing_exchange_name"] != victim.backing_exchange_name
+        assert published.status_code == 200, published.text
+        assert deleted.status_code == 200, deleted.text
+        assert victim.backing_exchange_name not in all_broker_calls_text(broker)
+        assert len(await subject_rows(victim_uuid)) == 1
+        assert await subject_rows(attack) == []
+
+    async def test_create_stores_the_minted_exchange_on_the_row(self, tag, broker):
+        await seed_owner(tag)
+        async with client_with(broker) as c:
+            response = await c.post(
+                "/subjects/",
+                json=create_body("feeder", ""),
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 200, response.text
+        minted = response.json()["subject_uuid"]
+        stored = await stored_subject(minted)
+        assert stored is not None
+        assert stored.backing_exchange_name == f"e_{minted}"
 
 
 class TestOneMintingFunction:

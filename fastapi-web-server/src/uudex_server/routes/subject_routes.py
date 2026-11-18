@@ -78,9 +78,8 @@ async def create_subject(
     endpoint = await session.merge(user.endpoint)
     participant_id = endpoint.participant_id
 
-    # Auto-generate UUID if not provided
-    if not subject_data.subject_uuid:
-        subject_data.subject_uuid = str(uuid.uuid4())
+    # The server owns the uuid: a client-chosen one could alias another subject's exchange.
+    subject_data.subject_uuid = str(uuid.uuid4())
 
     # Set required fields from context
     subject_data.owner_participant_id = participant_id
