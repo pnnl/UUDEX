@@ -43,8 +43,8 @@ class Repository(Generic[T]):
     async def select_by_ids(self, **ids: int) -> T | None:
         statements = [getattr(self.model, field) == ids[field] for field in self.id_fields]
         statement = _select(self.model).where(*statements)
-        res = self.session.exec(statement)
-        return res.first()
+        result = await self.session.execute(statement)
+        return result.scalars().first()
 
     async def select_by_fields(self, **ids: int) -> T | None:
         statements = [
@@ -53,23 +53,23 @@ class Repository(Generic[T]):
             if field in ids
         ]
         statement = _select(self.model).where(*statements)
-        res = self.session.exec(statement)
-        return res.first()
+        result = await self.session.execute(statement)
+        return result.scalars().first()
 
     async def delete(self, obj: BaseModel) -> None:
         statements = [getattr(self.model, field) == getattr(obj, field) for field in self.id_fields]
         statement = _delete(self.model).where(*statements)
-        self.session.exec(statement)
-        self.session.commit()
+        await self.session.execute(statement)
+        await self.session.commit()
 
     async def update(self, obj: T) -> T:
         statements = [getattr(self.model, field) == getattr(obj, field) for field in self.id_fields]
         statement = (
             _update(self.model).where(*statements).values(**obj.model_dump(exclude_unset=True))
         )
-        self.session.exec(statement)
-        self.session.commit()
-        self.session.refresh(obj)
+        await self.session.execute(statement)
+        await self.session.commit()
+        await self.session.refresh(obj)
         return obj
 
     async def create(self, obj: T) -> T:
