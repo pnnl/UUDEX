@@ -21,7 +21,11 @@ from uudex_server.models.subject_models import (
 )
 from uudex_server.repos import subscription_and_subject_repositories as pr
 from uudex_server.services.message_services import create_broker_service
-from uudex_server.services.message_services.base import BrokerError, UUDEXBrokerService
+from uudex_server.services.message_services.base import (
+    BrokerError,
+    UUDEXBrokerService,
+    exchange_name,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -83,10 +87,8 @@ async def create_subject(
     if not subject_data.dataset_definition_id:
         subject_data.dataset_definition_id = 1  # Default dataset definition
 
-    # Publish sends to this name, so it is the one the broker creates, never the client's.
-    subject_data.backing_exchange_name = UUDEXBrokerService.build_exchange_name(
-        subject_data.subject_name, subject_data.subject_uuid
-    )
+    # Minted once here and stored; publish and delete read it back from the row.
+    subject_data.backing_exchange_name = exchange_name(subject_data.subject_uuid)
 
     # Create subject in database
     subject_dict = subject_data.model_dump()
@@ -97,13 +99,11 @@ async def create_subject(
 
     try:
         # Create message broker infrastructure
-        broker.create_subject(
-            subject_name=created_subject.subject_name, subject_uuid=created_subject.subject_uuid
-        )
+        broker.create_exchange(created_subject.backing_exchange_name)
     except Exception as e:
         # Any failure, not only BrokerError, must remove the row: otherwise it is left with no
         # exchange behind it.
-        _log.exception("Broker create_subject failed for subject %s", created_subject.subject_uuid)
+        _log.exception("Broker create_exchange failed for subject %s", created_subject.subject_uuid)
         try:
             await repo.delete(created_subject)
         except Exception:
@@ -229,7 +229,8 @@ async def delete_subject(
     # The row goes first, uncommitted: a subject still linked to a subscription fails here,
     # before the exchange is touched.
     # A rollback expires the loaded row, so read what the handlers below need first.
-    name, subject_uuid = existing_subject.subject_name, existing_subject.subject_uuid
+    subject_uuid = existing_subject.subject_uuid
+    exchange = existing_subject.backing_exchange_name
     try:
         await repo.delete(existing_subject, commit=False)
     except IntegrityError as e:
@@ -241,12 +242,12 @@ async def delete_subject(
         ) from e
 
     try:
-        broker.delete_subject(subject_name=name, subject_uuid=subject_uuid)
+        broker.delete_exchange(exchange)
     except BrokerError as e:
         # Roll the row back so the subject stays visible and the delete can be retried instead
         # of orphaning the exchange. 500 matches create_subject and publish.
         await session.rollback()
-        _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
+        _log.exception("Broker delete_exchange failed for subject %s", subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete message broker infrastructure",
@@ -359,6 +360,8 @@ async def publish_messages_to_subject(
                 detail="Not authorized to publish to this subject",
             )
 
+    exchange = subject.backing_exchange_name
+
     # Publish messages to the subject's exchange
     message_ids = []
     published_count = 0
@@ -370,7 +373,7 @@ async def publish_messages_to_subject(
 
             # Publish to broker
             result = broker.publish_message(
-                subject_exchange=subject.backing_exchange_name,
+                subject_exchange=exchange,
                 routing_key="",  # Fanout exchange doesn't use routing keys
                 payload=message_payload,
                 payload_enc=publish_request.payload_encoding,
@@ -402,10 +405,7 @@ async def publish_messages_to_subject(
 
 @subject_router.get("/{subject_uuid}/queue-info", operation_id="get_subject_queue_info")
 async def get_subject_queue_info(
-    subject_uuid: str,
-    session: SessionDep,
-    user: UserDep,
-    broker: UUDEXBrokerService = Depends(get_broker_service),
+    subject_uuid: str, session: SessionDep, user: UserDep
 ) -> SubjectQueueInfo:
     """
     Get detailed queue information for a subject.
@@ -426,7 +426,7 @@ async def get_subject_queue_info(
                 detail="Not authorized to view queue info for this subject",
             )
 
-    return await _get_subject_queue_info(subject, broker)
+    return await _get_subject_queue_info(subject, subject.backing_exchange_name)
 
 
 @subject_router.post("/{subject_uuid}/queue-management", operation_id="manage_subject_queues")
@@ -463,7 +463,7 @@ async def manage_subject_queues(
 
     try:
         if queue_request.action == "info":
-            queue_info = await _get_subject_queue_info(subject, broker)
+            queue_info = await _get_subject_queue_info(subject, subject.backing_exchange_name)
             return QueueManagementResponse(
                 success=True,
                 message="Queue information retrieved successfully",
@@ -573,6 +573,7 @@ async def bulk_subject_operations(
                 continue
 
             if bulk_request.operation == "delete":
+                exchange = subject.backing_exchange_name
                 # Row first, uncommitted, as in the single delete: a linked subject fails
                 # before the exchange is touched, and a broker failure rolls the row back.
                 try:
@@ -589,12 +590,10 @@ async def bulk_subject_operations(
                     continue
 
                 try:
-                    broker.delete_subject(
-                        subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
-                    )
+                    broker.delete_exchange(exchange)
                 except BrokerError:
                     await session.rollback()
-                    _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
+                    _log.exception("Broker delete_exchange failed for subject %s", subject_uuid)
                     failed.append({"subject_uuid": subject_uuid, "error": "Broker delete failed"})
                     continue
 
@@ -656,13 +655,10 @@ async def bulk_subject_operations(
 # =====================================================
 
 
-async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) -> SubjectQueueInfo:
+async def _get_subject_queue_info(subject: Subject, exchange: str) -> SubjectQueueInfo:
     """
     Helper function to get queue information for a subject.
     """
-    # Get basic queue information
-    exchange_name = broker.build_exchange_name(subject.subject_name, subject.subject_uuid)
-
     # Count queues and messages (this is a simplified implementation)
     # In a real implementation, you would query the message broker for detailed stats
     queue_count = len(subject.subscription_links)
@@ -672,7 +668,7 @@ async def _get_subject_queue_info(subject: Subject, broker: UUDEXBrokerService) 
     return SubjectQueueInfo(
         subject_uuid=subject.subject_uuid,
         subject_name=subject.subject_name,
-        exchange_name=exchange_name,
+        exchange_name=exchange,
         queue_count=queue_count,
         total_messages=total_messages,
         total_consumers=total_consumers,

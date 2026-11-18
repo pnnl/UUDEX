@@ -22,7 +22,13 @@ TRUSTED = "127.0.0.1"
 
 
 def exchange_for(name: str, subject_uuid: str) -> str:
+    """The name rows were given before the server minted `e_<uuid>`; still honored at use."""
     return f"e_{name}_{subject_uuid}"
+
+
+def suuid(tag: str, label: str) -> str:
+    """A canonical subject uuid for this test and label; stored names are only trusted with one."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{tag}/{label}"))
 
 
 @asynccontextmanager
@@ -62,7 +68,11 @@ async def seed_definition() -> int:
 
 
 async def seed_subject(
-    subject_uuid: str, participant_id: int, definition_id: int = 1, name: str = "s"
+    subject_uuid: str,
+    participant_id: int,
+    definition_id: int = 1,
+    name: str = "s",
+    exchange: str | None = None,
 ) -> m.Subject:
     async with get_db_session() as session:
         return await SubjectRepository(session).create(
@@ -76,7 +86,7 @@ async def seed_subject(
                 max_queue_size_kb=None,
                 max_message_count=None,
                 priority=None,
-                backing_exchange_name=exchange_for(name, subject_uuid),
+                backing_exchange_name=exchange or exchange_for(name, subject_uuid),
                 owner_participant_id=participant_id,
                 dataset_definition_id=definition_id,
                 create_datetime=None,
@@ -108,28 +118,30 @@ class TestExchangeNameIsServerOwned:
     async def test_create_ignores_a_client_chosen_exchange(self, tag, broker):
         mine = await seed_participant()
         await seed_endpoint(mine, f"own-{tag}")
-        victim = await seed_subject(f"{tag}-victim", await seed_participant(), name="victim")
+        victim = await seed_subject(suuid(tag, "victim"), await seed_participant(), name="victim")
 
         async with client_with(broker) as c:
             response = await c.post(
                 "/subjects/",
                 json=create_body(
-                    "mine", f"{tag}-mine", backing_exchange_name=victim.backing_exchange_name
+                    "mine", suuid(tag, "mine"), backing_exchange_name=victim.backing_exchange_name
                 ),
                 headers=identity_headers(f"own-{tag}"),
             )
 
         assert response.status_code == 200, response.text
-        assert response.json()["backing_exchange_name"] == exchange_for("mine", f"{tag}-mine")
-        stored = await stored_subject(f"{tag}-mine")
+        minted = response.json()["subject_uuid"]
+        assert response.json()["backing_exchange_name"] == f"e_{minted}"
+        stored = await stored_subject(minted)
         assert stored is not None
-        assert stored.backing_exchange_name == exchange_for("mine", f"{tag}-mine")
+        assert stored.backing_exchange_name == f"e_{minted}"
+        assert stored.backing_exchange_name != victim.backing_exchange_name
 
     async def test_put_cannot_change_the_exchange_and_publish_stays_on_it(self, tag, broker):
         mine = await seed_participant()
         await seed_endpoint(mine, f"own-{tag}")
-        victim = await seed_subject(f"{tag}-victim", await seed_participant(), name="victim")
-        own = await seed_subject(f"{tag}-mine", mine, name="mine")
+        victim = await seed_subject(suuid(tag, "victim"), await seed_participant(), name="victim")
+        own = await seed_subject(suuid(tag, "mine"), mine, name="mine")
         headers = identity_headers(f"own-{tag}")
 
         async with client_with(broker) as c:
@@ -139,16 +151,18 @@ class TestExchangeNameIsServerOwned:
                 headers=headers,
             )
             published = await c.post(
-                f"/subjects/{tag}-mine/publish", json={"messages": ["a", "b"]}, headers=headers
+                f"/subjects/{suuid(tag, 'mine')}/publish",
+                json={"messages": ["a", "b"]},
+                headers=headers,
             )
 
         assert put.status_code == 200, put.text
-        stored = await stored_subject(f"{tag}-mine")
+        stored = await stored_subject(suuid(tag, "mine"))
         assert stored is not None
-        assert stored.backing_exchange_name == exchange_for("mine", f"{tag}-mine")
+        assert stored.backing_exchange_name == exchange_for("mine", suuid(tag, "mine"))
         assert published.status_code == 200, published.text
         assert [c.kwargs["subject_exchange"] for c in broker.publish_message.call_args_list] == [
-            exchange_for("mine", f"{tag}-mine")
+            exchange_for("mine", suuid(tag, "mine"))
         ] * 2
 
 
@@ -241,37 +255,37 @@ class TestSubscriptionUuidIsServerOwned:
 class TestUpdateAndDeleteAsOwner:
     async def test_update_with_no_field_is_a_no_op_that_returns_the_row(self, tag):
         participant = await seed_participant()
-        seeded = await seed_subject(f"{tag}-one", participant, name="one")
+        seeded = await seed_subject(suuid(tag, "one"), participant, name="one")
         async with get_db_session() as session:
             repo = SubjectRepository(session)
-            row = await repo.select_by_field("subject_uuid", f"{tag}-one")
+            row = await repo.select_by_field("subject_uuid", suuid(tag, "one"))
             assert row is not None
             returned = await repo.update(row)
         assert returned.subject_id == seeded.subject_id
-        stored = await stored_subject(f"{tag}-one")
+        stored = await stored_subject(suuid(tag, "one"))
         assert stored is not None
         assert (stored.subject_name, stored.backing_exchange_name) == (
             "one",
-            exchange_for("one", f"{tag}-one"),
+            exchange_for("one", suuid(tag, "one")),
         )
 
     async def test_owner_put_with_an_empty_body_is_200_and_changes_nothing(self, tag, broker):
         participant = await seed_participant()
         await seed_endpoint(participant, f"own-{tag}")
-        own = await seed_subject(f"{tag}-one", participant, name="one")
+        own = await seed_subject(suuid(tag, "one"), participant, name="one")
         async with client_with(broker) as c:
             response = await c.put(
                 f"/subject/{own.subject_id}", json={}, headers=identity_headers(f"own-{tag}")
             )
         assert response.status_code == 200, response.text
         assert response.json()["subject_name"] == "one"
-        stored = await stored_subject(f"{tag}-one")
+        stored = await stored_subject(suuid(tag, "one"))
         assert stored is not None and stored.subject_name == "one"
 
     async def test_owner_put_writes_only_the_given_field(self, tag, broker):
         participant = await seed_participant()
         await seed_endpoint(participant, f"own-{tag}")
-        own = await seed_subject(f"{tag}-one", participant, name="one")
+        own = await seed_subject(suuid(tag, "one"), participant, name="one")
         async with client_with(broker) as c:
             response = await c.put(
                 f"/subject/{own.subject_id}",
@@ -279,7 +293,7 @@ class TestUpdateAndDeleteAsOwner:
                 headers=identity_headers(f"own-{tag}"),
             )
         assert response.status_code == 200, response.text
-        stored = await stored_subject(f"{tag}-one")
+        stored = await stored_subject(suuid(tag, "one"))
         assert stored is not None
         assert (stored.priority, stored.subject_name) == (7, "one")
 
@@ -287,7 +301,7 @@ class TestUpdateAndDeleteAsOwner:
     async def test_put_with_a_null_for_a_required_column_is_422(self, tag, broker, field):
         participant = await seed_participant()
         await seed_endpoint(participant, f"own-{tag}")
-        own = await seed_subject(f"{tag}-one", participant, name="one")
+        own = await seed_subject(suuid(tag, "one"), participant, name="one")
         async with client_with(broker) as c:
             response = await c.put(
                 f"/subject/{own.subject_id}",
@@ -295,12 +309,12 @@ class TestUpdateAndDeleteAsOwner:
                 headers=identity_headers(f"own-{tag}"),
             )
         assert response.status_code == 422
-        stored = await stored_subject(f"{tag}-one")
+        stored = await stored_subject(suuid(tag, "one"))
         assert stored is not None and stored.subject_name == "one"
 
     async def test_non_owner_put_is_403_and_changes_nothing(self, tag, broker):
         await seed_endpoint(await seed_participant(), f"other-{tag}")
-        victim = await seed_subject(f"{tag}-one", await seed_participant(), name="one")
+        victim = await seed_subject(suuid(tag, "one"), await seed_participant(), name="one")
         async with client_with(broker) as c:
             response = await c.put(
                 f"/subject/{victim.subject_id}",
@@ -308,31 +322,31 @@ class TestUpdateAndDeleteAsOwner:
                 headers=identity_headers(f"other-{tag}"),
             )
         assert response.status_code == 403
-        stored = await stored_subject(f"{tag}-one")
+        stored = await stored_subject(suuid(tag, "one"))
         assert stored is not None and stored.subject_name == "one"
 
     async def test_owner_delete_removes_the_row_and_the_exchange(self, tag, broker):
         participant = await seed_participant()
         await seed_endpoint(participant, f"own-{tag}")
-        own = await seed_subject(f"{tag}-one", participant, name="one")
+        own = await seed_subject(suuid(tag, "one"), participant, name="one")
         async with client_with(broker) as c:
             response = await c.delete(
                 f"/subject/{own.subject_id}", headers=identity_headers(f"own-{tag}")
             )
         assert response.status_code == 200, response.text
-        assert await stored_subject(f"{tag}-one") is None
-        broker.delete_subject.assert_called_once_with(subject_name="one", subject_uuid=f"{tag}-one")
+        assert await stored_subject(suuid(tag, "one")) is None
+        broker.delete_exchange.assert_called_once_with(exchange_for("one", suuid(tag, "one")))
 
     async def test_non_owner_delete_is_403_and_touches_nothing(self, tag, broker):
         await seed_endpoint(await seed_participant(), f"other-{tag}")
-        victim = await seed_subject(f"{tag}-one", await seed_participant(), name="one")
+        victim = await seed_subject(suuid(tag, "one"), await seed_participant(), name="one")
         async with client_with(broker) as c:
             response = await c.delete(
                 f"/subject/{victim.subject_id}", headers=identity_headers(f"other-{tag}")
             )
         assert response.status_code == 403
-        assert await stored_subject(f"{tag}-one") is not None
-        broker.delete_subject.assert_not_called()
+        assert await stored_subject(suuid(tag, "one")) is not None
+        broker.delete_exchange.assert_not_called()
 
 
 @pytest.fixture
@@ -391,8 +405,8 @@ class TestDeleteWithForeignKeysEnforced:
                 assert endpoint is not None
                 endpoint.uudex_administrator_sw = "Y"
         definition = await seed_definition()
-        linked = await seed_subject(f"{tag}-linked", participant, definition, "linked")
-        free = await seed_subject(f"{tag}-free", participant, definition, "free")
+        linked = await seed_subject(suuid(tag, "linked"), participant, definition, "linked")
+        free = await seed_subject(suuid(tag, "free"), participant, definition, "free")
         await seed_link(linked.subject_id, endpoint_id, tag)
         return linked, free
 
@@ -405,8 +419,8 @@ class TestDeleteWithForeignKeysEnforced:
                 f"/subject/{linked.subject_id}", headers=identity_headers(f"own-{tag}")
             )
         assert response.status_code == 409, response.text
-        broker.delete_subject.assert_not_called()
-        assert await stored_subject(f"{tag}-linked") is not None
+        broker.delete_exchange.assert_not_called()
+        assert await stored_subject(suuid(tag, "linked")) is not None
         assert await link_count(linked.subject_id) == 1
 
     async def test_single_delete_of_an_unlinked_subject_still_works(
@@ -418,10 +432,8 @@ class TestDeleteWithForeignKeysEnforced:
                 f"/subject/{free.subject_id}", headers=identity_headers(f"own-{tag}")
             )
         assert response.status_code == 200, response.text
-        assert await stored_subject(f"{tag}-free") is None
-        broker.delete_subject.assert_called_once_with(
-            subject_name="free", subject_uuid=f"{tag}-free"
-        )
+        assert await stored_subject(suuid(tag, "free")) is None
+        broker.delete_exchange.assert_called_once_with(exchange_for("free", suuid(tag, "free")))
 
     async def test_bulk_delete_skips_the_linked_subject_and_deletes_the_rest(
         self, foreign_keys_on, tag, broker
@@ -430,17 +442,18 @@ class TestDeleteWithForeignKeysEnforced:
         async with client_with(broker) as c:
             response = await c.post(
                 "/subjects/bulk-operations",
-                json={"subject_uuids": [f"{tag}-linked", f"{tag}-free"], "operation": "delete"},
+                json={
+                    "subject_uuids": [suuid(tag, "linked"), suuid(tag, "free")],
+                    "operation": "delete",
+                },
                 headers=identity_headers(f"own-{tag}"),
             )
         assert response.status_code == 200, response.text
         body = response.json()
-        assert body["successful"] == [f"{tag}-free"]
-        assert [f["subject_uuid"] for f in body["failed"]] == [f"{tag}-linked"]
+        assert body["successful"] == [suuid(tag, "free")]
+        assert [f["subject_uuid"] for f in body["failed"]] == [suuid(tag, "linked")]
         assert "linked" in body["failed"][0]["error"]
-        broker.delete_subject.assert_called_once_with(
-            subject_name="free", subject_uuid=f"{tag}-free"
-        )
-        assert await stored_subject(f"{tag}-linked") is not None
-        assert await stored_subject(f"{tag}-free") is None
+        broker.delete_exchange.assert_called_once_with(exchange_for("free", suuid(tag, "free")))
+        assert await stored_subject(suuid(tag, "linked")) is not None
+        assert await stored_subject(suuid(tag, "free")) is None
         assert await link_count(linked.subject_id) == 1
