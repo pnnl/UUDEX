@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 from fastapi import HTTPException
 from pyrabbit2 import http as pyrabbit_http
-from pyrabbit2.api import APIError
+from pyrabbit2 import api as pyrabbit_api
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uudex_server.models.authenticated_user import AuthenticatedUser
@@ -70,6 +70,23 @@ def make_repo(subject):
     repo.create = AsyncMock(return_value=subject)
     repo.delete = AsyncMock()
     return repo
+
+
+def make_subject_create():
+    return SubjectCreate(
+        subject_uuid="subj-uuid",
+        subject_name="subj",
+        dataset_instance_key="k",
+        subscription_type="pull",
+        fulfillment_types_available="immediate",
+        full_queue_behavior="NO_CONSTRAINT",
+        max_queue_size_kb=None,
+        max_message_count=None,
+        priority=None,
+        backing_exchange_name="e_subj_subj-uuid",
+        owner_participant_id=1,
+        dataset_definition_id=1,
+    )
 
 
 def error_records(caplog):
@@ -185,7 +202,9 @@ class TestBulkPurge:
 
 
 class TestOtherHandlersLog:
-    async def test_single_delete_logs_and_still_deletes_row(self, session, admin_user, caplog):
+    async def test_single_delete_logs_keeps_row_and_reports_error(
+        self, session, admin_user, caplog
+    ):
         subject = make_subject()
         repo = make_repo(subject)
         broker = make_broker()
@@ -196,45 +215,70 @@ class TestOtherHandlersLog:
             patch.object(
                 subject_routes.pr, "select_subject_by_id", new=AsyncMock(return_value=subject)
             ),
+            pytest.raises(HTTPException) as exc_info,
         ):
-            result = await subject_routes.delete_subject(7, session, admin_user, broker)
+            await subject_routes.delete_subject(7, session, admin_user, broker)
+
+        assert exc_info.value.status_code == 500
+        assert "exchange delete refused" in exc_info.value.detail
+        repo.delete.assert_not_called()
+        records = error_records(caplog)
+        assert len(records) == 1
+        assert "subj-uuid" in records[0].getMessage()
+        assert isinstance(records[0].exc_info[1], BrokerError)
+
+    async def test_single_delete_success_deletes_row(self, session, admin_user, caplog):
+        subject = make_subject()
+        repo = make_repo(subject)
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            patch.object(
+                subject_routes.pr, "select_subject_by_id", new=AsyncMock(return_value=subject)
+            ),
+        ):
+            result = await subject_routes.delete_subject(7, session, admin_user, make_broker())
 
         assert result == {"message": "Subject deleted successfully", "subject_id": 7}
         repo.delete.assert_awaited_once_with(7)
-        records = error_records(caplog)
-        assert len(records) == 1
-        assert isinstance(records[0].exc_info[1], BrokerError)
+        assert error_records(caplog) == []
 
     async def test_create_logs_and_rolls_back(self, session, admin_user, caplog):
         subject = make_subject()
         repo = make_repo(subject)
         broker = make_broker()
         broker.create_subject.side_effect = BrokerError("exchange create refused")
-        data = SubjectCreate(
-            subject_uuid="subj-uuid",
-            subject_name="subj",
-            dataset_instance_key="k",
-            subscription_type="pull",
-            fulfillment_types_available="immediate",
-            full_queue_behavior="NO_CONSTRAINT",
-            max_queue_size_kb=None,
-            max_message_count=None,
-            priority=None,
-            backing_exchange_name="e_subj_subj-uuid",
-            owner_participant_id=1,
-            dataset_definition_id=1,
-        )
-
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
             pytest.raises(HTTPException) as exc_info,
         ):
-            await subject_routes.create_subject(data, session, admin_user, broker)
+            await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
 
         assert exc_info.value.status_code == 500
         assert "exchange create refused" in exc_info.value.detail
         repo.delete.assert_awaited_once_with(7)
         assert len(error_records(caplog)) == 1
+
+    async def test_create_rolls_back_and_reraises_non_broker_error(
+        self, session, admin_user, caplog
+    ):
+        subject = make_subject()
+        repo = make_repo(subject)
+        broker = make_broker()
+        bug = RuntimeError("unexpected library bug")
+        broker.create_subject.side_effect = bug
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            pytest.raises(RuntimeError) as exc_info,
+        ):
+            await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
+
+        assert exc_info.value is bug
+        repo.delete.assert_awaited_once_with(7)
+        records = error_records(caplog)
+        assert len(records) == 1
+        assert records[0].exc_info[1] is bug
 
     async def test_publish_logs(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
@@ -254,7 +298,7 @@ class TestOtherHandlersLog:
         assert len(records) == 1
         assert isinstance(records[0].exc_info[1], BrokerError)
 
-    async def test_single_purge_logs_each_failed_queue(self, session, admin_user, caplog):
+    async def test_single_purge_reports_every_failed_queue(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
         broker = make_broker()
         broker.delete_queue.side_effect = BrokerError("queue gone")
@@ -264,8 +308,47 @@ class TestOtherHandlersLog:
                 "subj-uuid", QueueManagementRequest(action="purge"), session, admin_user, broker
             )
 
-        assert result.queue_info == {"purged_queues": []}
+        assert result.success is False
+        assert "q_sub-a" in result.message
+        assert "q_sub-b" in result.message
+        assert result.queue_info == {
+            "purged_queues": [],
+            "failed_queues": ["q_sub-a", "q_sub-b"],
+        }
         assert len(error_records(caplog)) == 2
+
+    async def test_single_purge_partial_failure_is_not_a_success(
+        self, session, admin_user, caplog
+    ):
+        repo = make_repo(make_subject())
+        broker = make_broker()
+        broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
+
+        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+            result = await subject_routes.manage_subject_queues(
+                "subj-uuid", QueueManagementRequest(action="purge"), session, admin_user, broker
+            )
+
+        assert result.success is False
+        assert result.queue_info == {"purged_queues": ["q_sub-b"], "failed_queues": ["q_sub-a"]}
+        assert len(error_records(caplog)) == 1
+
+    async def test_single_purge_success_response_is_unchanged(self, session, admin_user, caplog):
+        repo = make_repo(make_subject())
+
+        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+            result = await subject_routes.manage_subject_queues(
+                "subj-uuid",
+                QueueManagementRequest(action="purge"),
+                session,
+                admin_user,
+                make_broker(),
+            )
+
+        assert result.success is True
+        assert result.message == "Purged 2 queues"
+        assert result.queue_info == {"purged_queues": ["q_sub-a", "q_sub-b"]}
+        assert error_records(caplog) == []
 
     async def test_queue_management_catch_all_logs(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
@@ -287,39 +370,90 @@ class TestOtherHandlersLog:
         assert isinstance(records[0].exc_info[1], RuntimeError)
 
 
+BROKER_URL = "amqp://host:15672?username=u&password=p"
+
+# One call per decorated RabbitMqService method, with arguments that reach the HTTP layer.
+BROKER_CALLS = {
+    "create_subscription_subject": ("sub-uuid", "subj-uuid", "subj", "tag"),
+    "create_subscription_subject_with_performance_constraints": (
+        "sub-uuid",
+        "subj-uuid",
+        "subj",
+        "tag",
+    ),
+    "delete_subscription_subject": ("sub-uuid", "subj", "tag"),
+    "create_subject": ("subj", "subj-uuid"),
+    "delete_subject": ("subj", "subj-uuid"),
+    "delete_queue": ("q",),
+    "publish_message": ("e_subj", "key", "payload"),
+    "get_messages": ("q",),
+}
+
+
+def real_service_failing_at_http(http_error):
+    """A RabbitMqService with the real pyrabbit2 client whose HTTP layer raises http_error."""
+    service = RabbitMqService(BROKER_URL)
+    service._client.http.do_call = Mock(side_effect=http_error)
+    return service
+
+
 class TestRabbitMqErrorTranslation:
     @pytest.mark.parametrize(
-        "library_error",
+        ("http_error", "expected_cause"),
         [
-            pyrabbit_http.HTTPError({"reason": "nope"}, status=500, reason="Server Error"),
-            pyrabbit_http.NetworkError("unreachable"),
-            APIError("no vhost"),
-            PermissionError("401"),
+            pytest.param(
+                pyrabbit_http.HTTPError({}, status=401, reason="Unauthorized"),
+                pyrabbit_api.PermissionError,
+                id="http-401",
+            ),
+            pytest.param(
+                pyrabbit_http.HTTPError({}, status=500, reason="Server Error"),
+                pyrabbit_http.HTTPError,
+                id="http-500",
+            ),
+            pytest.param(
+                pyrabbit_http.NetworkError("unreachable"),
+                pyrabbit_http.NetworkError,
+                id="network",
+            ),
         ],
     )
-    def test_library_errors_become_broker_error(self, library_error):
-        with patch("uudex_server.services.message_services.rabbit_mq.Client") as client_cls:
-            client_cls.return_value.delete_exchange.side_effect = library_error
-            service = RabbitMqService("amqp://host:15672?username=u&password=p")
+    @pytest.mark.parametrize("method_name", sorted(BROKER_CALLS))
+    def test_real_client_failures_become_broker_error(
+        self, method_name, http_error, expected_cause
+    ):
+        service = real_service_failing_at_http(http_error)
 
         with pytest.raises(BrokerError) as exc_info:
-            service.delete_subject("subj", "subj-uuid")
+            getattr(service, method_name)(*BROKER_CALLS[method_name])
 
-        assert exc_info.value.__cause__ is library_error
-        assert "delete_subject" in str(exc_info.value)
+        assert type(exc_info.value.__cause__) is expected_cause
+        assert method_name in str(exc_info.value)
 
-    def test_unrelated_errors_are_not_translated(self):
+    def test_every_service_method_is_covered_by_the_cases(self):
+        public = {
+            name
+            for name, value in vars(RabbitMqService).items()
+            if callable(value) and not name.startswith("_")
+        }
+
+        assert public == set(BROKER_CALLS)
+
+    @pytest.mark.parametrize("bug", [KeyError("bug"), PermissionError("filesystem")])
+    def test_unrelated_errors_are_not_translated(self, bug):
         with patch("uudex_server.services.message_services.rabbit_mq.Client") as client_cls:
-            client_cls.return_value.delete_exchange.side_effect = KeyError("bug")
-            service = RabbitMqService("amqp://host:15672?username=u&password=p")
+            client_cls.return_value.delete_exchange.side_effect = bug
+            service = RabbitMqService(BROKER_URL)
 
-        with pytest.raises(KeyError):
+        with pytest.raises(type(bug)) as exc_info:
             service.delete_subject("subj", "subj-uuid")
+
+        assert exc_info.value is bug
 
     def test_return_value_passes_through(self):
         with patch("uudex_server.services.message_services.rabbit_mq.Client") as client_cls:
             client_cls.return_value.delete_queue.return_value = True
-            service = RabbitMqService("amqp://host:15672?username=u&password=p")
+            service = RabbitMqService(BROKER_URL)
 
         assert service.delete_queue("q") is True
         client_cls.return_value.delete_queue.assert_called_once_with("/", "q")
