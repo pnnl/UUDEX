@@ -311,7 +311,10 @@ class TestBulkPurge:
         broker = make_broker()
         broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.bulk_subject_operations(
                 BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="purge_queues"),
                 session,
@@ -332,7 +335,10 @@ class TestBulkPurge:
     async def test_success_response_is_unchanged(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.bulk_subject_operations(
                 BulkSubjectOperation(subject_uuids=[SUBJ_UUID], operation="purge_queues"),
                 session,
@@ -495,7 +501,10 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = BrokerError("queue gone")
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
                 SUBJ_UUID, QueueManagementRequest(action="purge"), session, admin_user, broker
             )
@@ -514,7 +523,10 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
                 SUBJ_UUID, QueueManagementRequest(action="purge"), session, admin_user, broker
             )
@@ -526,7 +538,10 @@ class TestOtherHandlersLog:
     async def test_single_purge_success_response_is_unchanged(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
                 SUBJ_UUID,
                 QueueManagementRequest(action="purge"),
