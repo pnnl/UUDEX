@@ -326,7 +326,7 @@ class TestOtherHandlersLog:
         causes = [r.exc_info[1] for r in error_records(caplog)]
         assert causes[0] is broker_error
         assert isinstance(causes[1], RuntimeError)
-        assert "rollback" in error_records(caplog)[1].getMessage()
+        assert "Rollback" in error_records(caplog)[1].getMessage()
         assert len(causes) == 2
 
     async def test_create_rollback_failure_keeps_non_broker_error(
