@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
-from uudex_server.core.dependencies import SessionDep, UserDep
+from uudex_server.core.dependencies import SessionDep, UserDep, get_admin_user
 from uudex_server.core.settings import get_settings
 from uudex_server.models import Subscription
 from uudex_server.models.message_models import (
@@ -40,11 +40,12 @@ async def get_subscription_subjects(
     return subscription_subjects
 
 
-@subscriptions_router.get("/admin", operation_id="get_admin_subscriptions")
-async def get_admin_subscriptions(
-    session: SessionDep,
-    user: UserDep,  # noqa: ARG001  (dependency enforces authentication)
-) -> list[Subscription]:
+@subscriptions_router.get(
+    "/admin",
+    operation_id="get_admin_subscriptions",
+    dependencies=[Depends(get_admin_user)],
+)
+async def get_admin_subscriptions(session: SessionDep) -> list[Subscription]:
     repo = ssr.SubscriptionRepository(session)
     return await repo.select_admin_subscriptions()
 
