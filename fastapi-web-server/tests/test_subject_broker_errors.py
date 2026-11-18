@@ -99,7 +99,7 @@ def error_records(caplog):
 class TestRealRepository:
     @pytest.mark.xfail(
         strict=True,
-        reason="#17: Repository.delete calls session.exec, which AsyncSession does not have",
+        reason="#67: Repository.delete calls session.exec, which AsyncSession does not have",
     )
     async def test_single_delete_removes_the_row(self, setup_test_env, admin_user):
         async with get_db_session() as session:
