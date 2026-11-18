@@ -529,21 +529,28 @@ main() {
   echo "all checks passed"
 }
 
-# Runs main as a job in its own process group and waits for it. A trap runs at once while the
-# shell is in wait, but only after a foreground command or $(...) ends, so INT and TERM
-# during a hung call would otherwise wait out its time bound. On a signal the whole group
-# is stopped, and the EXIT trap then removes the temporary folder and the throwaway container.
+# One handler for the four signals a terminal, a hangup or a CI cancel sends. Bash runs it when
+# the running call returns, so a signal to the script's PID alone waits out at most that call's
+# bound; one sent to the whole process group (Ctrl-C, kill -- -PGID) ends every call at once,
+# because each runs under timeout --foreground in this group. The EXIT trap does the cleanup.
+# KILL cannot be caught: the running call ends at its bound, no later check starts, and the
+# temporary folder (no real key in it) is left.
+on_signal() {
+  trap - HUP INT QUIT TERM
+  echo "error: stopped by signal; the checks did not finish" >&2
+  exit "$1"
+}
+
+# main runs in the foreground of this one process group: a background job would outlive a
+# hangup and be stopped by a terminal's tostop setting.
 guarded_main() {
-  local pid rc=0
   TMP=$(umask 077 && mktemp -d) || die "cannot make a temporary folder"
   [ -z "$PROJECT" ] || CONTAINER="${PROJECT}-check-$$"
-  set -m
-  main &
-  pid=$!
-  trap 'kill -TERM -- "-$pid" 2>/dev/null || true; exit 130' INT
-  trap 'kill -TERM -- "-$pid" 2>/dev/null || true; exit 143' TERM
-  wait "$pid" || rc=$?
-  exit "$rc"
+  trap 'on_signal 129' HUP
+  trap 'on_signal 130' INT
+  trap 'on_signal 131' QUIT
+  trap 'on_signal 143' TERM
+  main
 }
 
 # Sourcing the file loads the functions without running anything, so a test can call one.
