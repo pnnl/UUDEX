@@ -1,17 +1,20 @@
 # Calling the API with a client certificate
 
-Checked against commit f5b05cb (the code and the descriptions). The example outputs below were captured at edaf169 and were not re-run at f5b05cb; the routes they come from are unchanged except as noted.
+Checked against: The code and descriptions were read at commit f5b05cb; the example outputs were last run against a live stack at edaf169.
 
-The running stack from [running-the-stack.md](running-the-stack.md) is assumed: the proxy answers on `$BASE`, your client has a certificate, and the participant and endpoint rows for it exist (step 7 there). Every request must present a client certificate, and the server takes the caller's identity from it.
+The running stack from [running-the-stack.md](running-the-stack.md) is assumed: the proxy answers on `$BASE`, your client has a certificate, and the participant and endpoint rows for it exist (step 8 there). Every request must present a client certificate, and the server takes the caller's identity from it.
 
-Set these once in your shell, and put in your own client common name (CN) and participant. The values shown are the examples used in the outputs on this page, and `running-the-stack.md` uses the same names. `<certs-dir>` is the folder you gave `generate-certs.sh`. Change `BASE` if the proxy is on another host or port:
+Run the same exports as step 1 of [running-the-stack.md](running-the-stack.md), and put in your own client common name (CN) and participant. The values shown are the examples used in the outputs on this page, and `running-the-stack.md` uses the same names. `UUDEX_CERTS` is the folder you gave `generate-certs.sh`. Change `BASE` if the proxy is on another host or port:
 
 ```bash
-BASE=https://localhost:8443
-CLIENT=alice
-PARTICIPANT_UUID=p-0001
-C=<certs-dir>
-api() { curl -sS --cacert $C/ca.crt --cert $C/$CLIENT.crt --key $C/$CLIENT.key -w '\n-> %{http_code}\n' "$@"; }
+export UUDEX_CERTS=<certs-dir>        # folder for the certificates; you choose it
+export CLIENT=alice                   # your client common name (CN)
+export BASE=https://localhost:8443    # change for a different host or port
+export PARTICIPANT_UUID=p-0001
+export PARTICIPANT_SHORT=org
+export PARTICIPANT_LONG=Organization
+export ENDPOINT_UUID=e-alice-0001
+api() { curl -sS --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/$CLIENT.crt --key $UUDEX_CERTS/$CLIENT.key -w '\n-> %{http_code}\n' "$@"; }
 ```
 
 Every call below needs a certificate whose CN has an active endpoint row. Without one the answer is `401`, see the end of this page.
@@ -56,9 +59,9 @@ api $BASE/subscriptions/
 -> 200
 ```
 
-(That output is from `/participants/`; your own is the row whose `participant_uuid` is `$PARTICIPANT_UUID`. `/endpoint/` shows the one endpoint from step 7, and the last three print `[]` and `-> 200`.)
+(That output is from `/participants/`; your own is the row whose `participant_uuid` is `$PARTICIPANT_UUID`. `/endpoint/` shows the one endpoint from step 8, and the last three print `[]` and `-> 200`.)
 
-`/endpoint/{endpoint_id}` returns one endpoint by its numeric id, so you can look up a single row. You may read your own participant's endpoints; an administrator may read any. A missing id gives a 404 with a reason, and an id from another participant gives a 403:
+`/endpoint/{endpoint_id}` returns one endpoint by its numeric id, so you can look up a single row. You may read your own participant's endpoints; an administrator may read any. A missing id gives a 404 with a reason, and an id from another participant gives a 403 with this body (taken from the route code, `src/uudex_server/routes/uudex_routes.py:81`; not from a live run):
 
 ```bash
 api $BASE/endpoint/999
@@ -69,7 +72,12 @@ api $BASE/endpoint/999
 -> 404
 ```
 
-Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one subject (your participant's, or any for an administrator; `403` otherwise, `404` when missing), and `/subject/{subject_uuid}/queue-info` reports the state of the subject's message queues on the broker. The stack has no RabbitMQ, so the queue call has nothing to talk to there.
+```text
+{"detail":"Not authorized to view this endpoint"}
+-> 403
+```
+
+Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one subject (your participant's, or any for an administrator; `403` otherwise, `404` when missing), and `/subject/{subject_uuid}/queue-info` reports the state of the subject's message queues on the broker (it also gives `409` when the stored broker name is untrusted: `subject_routes.py:725`, `status_code=status.HTTP_409_CONFLICT, detail="Subject broker name needs repair"`). The stack has no RabbitMQ, so the queue call has nothing to talk to there.
 
 ## The API reference
 
@@ -80,7 +88,7 @@ Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one s
 The proxy refuses at the TLS handshake, so there is no HTTP status. `curl` ends with an error:
 
 ```bash
-curl --cacert $C/ca.crt $BASE/
+curl --cacert $UUDEX_CERTS/ca.crt $BASE/
 ```
 
 ```text
@@ -92,7 +100,7 @@ The server certificate used as a client gives `ssl/tls alert bad certificate`, a
 A certificate that the proxy accepts but whose common name has no endpoint row reaches the server, and the server answers `401`. The example uses a second client, made with `../infrastructure/certs/generate-certs.sh bob` into the same folder and not added to the database:
 
 ```bash
-curl -sS --cacert $C/ca.crt --cert $C/bob.crt --key $C/bob.key $BASE/endpoint/me -w '\n-> %{http_code}\n'
+curl -sS --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/bob.crt --key $UUDEX_CERTS/bob.key $BASE/endpoint/me -w '\n-> %{http_code}\n'
 ```
 
 ```text

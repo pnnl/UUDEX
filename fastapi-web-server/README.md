@@ -1,6 +1,6 @@
 # UUDEX-Server
 
-This server implementation uses FastAPI as its basis for data access. Each guide below was checked against commit edaf169.
+This server implementation uses FastAPI as its basis for data access. Each guide below says what it was checked against. The code and descriptions were read at commit f5b05cb; the example outputs were last run against a live stack at edaf169.
 
 ## Warnings
 
@@ -26,21 +26,23 @@ This server implementation uses FastAPI as its basis for data access. Each guide
 You need Docker with Compose, `openssl` and `curl`. From this directory (full steps, with the output to expect, in [docs/running-the-stack.md](docs/running-the-stack.md)):
 
 ```bash
+export UUDEX_CERTS=<certs-dir>        # folder for the certificates; you choose it
+export CLIENT=alice                   # your client common name (CN)
+export BASE=https://localhost:8443    # change for a different host or port
 [ -e .env.compose ] || cp .env.compose.example .env.compose
 for n in postgres_password postgres_dsn messagebus_connection x_ssl_cert; do
   [ -e secrets/compose_$n ] || cp secrets/example.compose_$n secrets/compose_$n
 done
 chmod 0444 secrets/compose_* && chmod 0700 secrets
-export UUDEX_CERTS=<certs-dir>
-../infrastructure/certs/generate-certs.sh alice --domain localhost
-# in .env.compose: set UUDEX_CERTS_DIR to <certs-dir>, UUDEX_PROXY_UID and UUDEX_PROXY_GID to `id -u` and `id -g`
+../infrastructure/certs/generate-certs.sh $CLIENT --domain localhost
+# in .env.compose: set UUDEX_CERTS_DIR to $UUDEX_CERTS, UUDEX_PROXY_UID and UUDEX_PROXY_GID to `id -u` and `id -g`
 docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
 ```
 
-Then add the client `alice` to the database (step 7) and call the API:
+Then add the client `$CLIENT` to the database (step 8) and call the API:
 
 ```bash
-curl --cacert <certs-dir>/ca.crt --cert <certs-dir>/alice.crt --key <certs-dir>/alice.key https://localhost:8443/endpoint/me
+curl --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/$CLIENT.crt --key $UUDEX_CERTS/$CLIENT.key $BASE/endpoint/me
 ```
 
 Stop with `docker compose --env-file .env.compose down`.

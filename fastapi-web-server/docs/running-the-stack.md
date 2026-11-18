@@ -1,6 +1,6 @@
 # Running the stack with the proxy
 
-Checked against commit edaf169. The troubleshooting, seed, wiring and remove-everything parts were re-run at a06f91c (only documentation differs between the two). The shell variables (`CLIENT`, `BASE` and the others in step 4) and the unquoted step 7 heredoc were added at f5b05cb and were not re-run against a live stack; the example outputs are unchanged from those runs.
+Checked against: The code and descriptions were read at commit f5b05cb; the example outputs were last run against a live stack at edaf169.
 
 `compose.yaml` starts the server, PostgreSQL and a Traefik proxy that verifies client certificates. The values in the example files are for local development only. They are not for real deployment.
 
@@ -8,7 +8,21 @@ The proxy is the only way in: it has one router, and that router adds the verifi
 
 You need Docker with Compose, `openssl` and `curl`. About 1.3 GB of memory is reserved by the limits in `compose.yaml` (512 MB for the server, 512 MB for PostgreSQL, 256 MB for the proxy). Run every command from the `fastapi-web-server` directory. The first start builds the server image and pulls two others.
 
-## 1. Copy the examples
+## 1. Set your values
+
+Choose your values once and export them in your shell; later steps and [calling-the-api.md](calling-the-api.md) use the same names. Put in your own client common name (CN) and participant: `alice` and `p-0001` are only the examples used in the outputs.
+
+```bash
+export UUDEX_CERTS=<certs-dir>        # folder for the certificates; you choose it
+export CLIENT=alice                   # your client common name (CN)
+export BASE=https://localhost:8443    # change for a different host or port
+export PARTICIPANT_UUID=p-0001
+export PARTICIPANT_SHORT=org
+export PARTICIPANT_LONG=Organization
+export ENDPOINT_UUID=e-alice-0001
+```
+
+## 2. Copy the examples
 
 Each secret is one file, mounted under `/run/secrets`; none goes in `environment:` or on a command line. Existing copies are kept, so it is safe to run this again:
 
@@ -19,11 +33,11 @@ for n in postgres_password postgres_dsn messagebus_connection x_ssl_cert; do
 done
 ```
 
-## 2. Passwords
+## 3. Passwords
 
 The password in `compose_postgres_password` and the one inside `compose_postgres_dsn` must match; the DSN host is `db`. The examples already match (`dev-only-change-me`), so you can leave them for a first run. Change both together if you edit one.
 
-## 3. Lock the files
+## 4. Lock the files
 
 They must be readable by uid 10001 (the server) and root (PostgreSQL). Compose cannot set file secret owners, so mode 0444 inside a 0700 directory keeps other host users out. To edit a file later, `chmod u+w` it first.
 
@@ -32,34 +46,21 @@ chmod 0444 secrets/compose_*
 chmod 0700 secrets
 ```
 
-## 4. Make the certificates
+## 5. Make the certificates
 
-Choose your values once and set them in your shell; later steps and [calling-the-api.md](calling-the-api.md) use the same names. Put in your own client common name (CN) and participant: `alice` and `p-0001` are only the examples used in the outputs.
-
-```bash
-CLIENT=alice
-PARTICIPANT_UUID=p-0001
-PARTICIPANT_SHORT=org
-PARTICIPANT_LONG=Organization
-ENDPOINT_UUID=e-alice-0001
-BASE=https://localhost:8443    # change for a different host or port
-C=<certs-dir>
-```
-
-Run this as the user who will run compose. The script writes to the folder in `UUDEX_CERTS` (or `-o`), never into this repository. `$CLIENT` is a client; `--domain localhost` makes the server certificate (`localhost.crt`, `localhost.key`). The folder `<certs-dir>` is one you choose; the script makes it with mode 700 and refuses one that other users can write.
+Run this as the user who will run compose. The script writes to the folder in `UUDEX_CERTS` (or `-o`), never into this repository. `$CLIENT` is a client; `--domain localhost` makes the server certificate (`localhost.crt`, `localhost.key`). The script makes the folder with mode 700 and refuses one that other users can write.
 
 ```bash
-export UUDEX_CERTS=$C
 ../infrastructure/certs/generate-certs.sh $CLIENT --domain localhost
 ```
 
 It prints the paths it wrote and ends with a `curl` example. That example omits the port; this stack listens on 8443 (`$BASE`). The client bundle `$CLIENT.p12` (for a browser) has the password `changeme`. More options: `../infrastructure/certs/README.md`.
 
-## 5. Tell compose where they are
+## 6. Tell compose where they are
 
-In `.env.compose` set `UUDEX_CERTS_DIR` to that folder, and `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` to the owner of `localhost.key` (`id -u`, `id -g`). The proxy mounts only `ca.crt`, `localhost.crt` and `localhost.key`, read-only; `ca.key` is never mounted. The example file leaves the two ids empty on purpose: compose refuses to start until you fill them in.
+In `.env.compose` set `UUDEX_CERTS_DIR` to `$UUDEX_CERTS`, and `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` to the owner of `localhost.key` (`id -u`, `id -g`). The proxy mounts only `ca.crt`, `localhost.crt` and `localhost.key`, read-only; `ca.key` is never mounted. The example file leaves the two ids empty on purpose: compose refuses to start until you fill them in.
 
-## 6. Start
+## 7. Start
 
 ```bash
 docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
@@ -73,7 +74,7 @@ docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
  Container uudex-proxy-1  Healthy
 ```
 
-"Healthy" is a weak signal. For the proxy it means only that the process answers its ping. For the server it means only that it answers HTTP on `/openapi.json`; it does not show that the database is reachable or usable. A proxy that cannot read its key, or that failed to load `traefik/dynamic.yml`, can still report healthy while it refuses every client. So run the checks in step 8.
+"Healthy" is a weak signal. For the proxy it means only that the process answers its ping. For the server it means only that it answers HTTP on `/openapi.json`; it does not show that the database is reachable or usable. A proxy that cannot read its key, or that failed to load `traefik/dynamic.yml`, can still report healthy while it refuses every client. So run the checks in step 9.
 
 ### If it will not start
 
@@ -86,20 +87,25 @@ docker compose --env-file .env.compose logs <service>
 
 Causes seen while checking these steps:
 
-- `error while interpolating services.proxy.user: required variable UUDEX_PROXY_UID is missing a value: set in .env.compose`. Nothing was created. Fill in `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` (step 5).
-- `invalid mount config for type "bind": bind source path does not exist: <path>/ca.crt`. `UUDEX_CERTS_DIR` names a folder that is missing or has no certificates (steps 4 and 5). The database container is created but not started.
-- All three containers `healthy`, but the first check in step 8 fails with `tlsv1 unrecognized name`, and `logs proxy` shows `open /certs/server.key: permission denied`. `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` are not the owner of `localhost.key`. Fix them, then `docker compose --env-file .env.compose up -d --wait --force-recreate proxy`.
+- `error while interpolating services.proxy.user: required variable UUDEX_PROXY_UID is missing a value: set in .env.compose`. Nothing was created. Fill in `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` (step 6).
+- `invalid mount config for type "bind": bind source path does not exist: <path>/ca.crt`. `UUDEX_CERTS_DIR` names a folder that is missing or has no certificates (steps 5 and 6). The database container is created but not started.
+- All three containers `healthy`, but the first check in step 9 fails with `tlsv1 unrecognized name`, and `logs proxy` shows `open /certs/server.key: permission denied`. `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` are not the owner of `localhost.key`. Fix them, then `docker compose --env-file .env.compose up -d --wait --force-recreate proxy`.
 - A port 8443 already in use on the host makes the proxy fail to start; `logs proxy` and `docker ps` show who holds it. Not reproduced here.
 
 `compose.yaml` names the project `uudex`. To use another project name, add `-p <name>` to every compose command, and pass the same name to the check script. The proxy publishes port 8443 on the host, so only one stack can run at a time.
 
-## 7. Add the client to the database
+## 8. Add the client to the database
 
 Identity comes from the certificate, but the server also needs an endpoint row for it. An administrator can create one through the API, but the first administrator does not exist yet, so insert a participant and an endpoint whose `certificate_dn` is the certificate's common name.
 
 `-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The tables have no unique constraint on these values, so running plain `insert` statements twice silently stores the rows twice (and a second endpoint for the same client). The `where not exists` guards make this step safe to run again.
 
 ```bash
+: "${CLIENT:?set CLIENT first (step 1)}"
+: "${PARTICIPANT_UUID:?set PARTICIPANT_UUID first (step 1)}"
+: "${PARTICIPANT_SHORT:?set PARTICIPANT_SHORT first (step 1)}"
+: "${PARTICIPANT_LONG:?set PARTICIPANT_LONG first (step 1)}"
+: "${ENDPOINT_UUID:?set ENDPOINT_UUID first (step 1)}"
 docker compose --env-file .env.compose exec -T db psql -1 -v ON_ERROR_STOP=1 -U postgres_user -d uudex <<SQL
 insert into participant (active_sw, participant_uuid, participant_short_name, participant_long_name, root_org_sw)
   select 'Y', '$PARTICIPANT_UUID', '$PARTICIPANT_SHORT', '$PARTICIPANT_LONG', 'Y'
@@ -121,26 +127,26 @@ ERROR:  relation "nosuchtable" does not exist
 
 The heredoc is unquoted so the shell fills in your values; keep them free of quotes and spaces. Leave out `-T` and the heredoc to get an interactive `psql` instead.
 
-## 8. Check it
+## 9. Check it
 
 The proxy listens on `127.0.0.1:8443`. `UUDEX_PROXY_BIND` changes the address; leave it on loopback unless clients must reach the proxy from other machines. Run the first check before the others: it shows that a valid client gets through on this port, so a failure in the next two means the certificate was refused and not that the stack is down or the port is wrong. The proxy refuses at the TLS handshake, so there is no HTTP status for the refused ones; each ends with the error shown.
 
 ```bash
-curl --cacert $C/ca.crt --cert $C/$CLIENT.crt --key $C/$CLIENT.key $BASE/endpoint/me   # 200, with $ENDPOINT_UUID in the body
-curl --cacert $C/ca.crt $BASE/                  # fails: "tlsv13 alert certificate required"
-curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key $BASE/   # fails: "ssl/tls alert bad certificate"
+curl --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/$CLIENT.crt --key $UUDEX_CERTS/$CLIENT.key $BASE/endpoint/me   # 200, with $ENDPOINT_UUID in the body
+curl --cacert $UUDEX_CERTS/ca.crt $BASE/                  # fails: "tlsv13 alert certificate required"
+curl --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/localhost.crt --key $UUDEX_CERTS/localhost.key $BASE/   # fails: "ssl/tls alert bad certificate"
 ```
 
 If the first check does not print `200`:
 
-- `401` with `{"detail":"Unauthorized: Invalid certificate"}`: the proxy accepted the certificate but the database has no endpoint whose `certificate_dn` matches its common name. Do step 7 again for that name.
-- A TLS error such as `unrecognized name`: run `docker compose --env-file .env.compose ps -a` and `docker compose --env-file .env.compose logs proxy`, and see "If it will not start" under step 6. A `healthy` proxy can still be refusing every client.
+- `401` with `{"detail":"Unauthorized: Invalid certificate"}`: the proxy accepted the certificate but the database has no endpoint whose `certificate_dn` matches its common name. Do step 8 again for that name.
+- A TLS error such as `unrecognized name`: run `docker compose --env-file .env.compose ps -a` and `docker compose --env-file .env.compose logs proxy`, and see "If it will not start" under step 7. A `healthy` proxy can still be refusing every client.
 
 For the full set of proxy checks, run `tests/compose/check-proxy.sh`: see [testing.md](testing.md).
 
 ## Add the first administrator
 
-The same command as in [running-locally.md](running-locally.md), run inside the server container (the image installs the `uudex-server` command). The participant from step 7 must exist; use its `participant_id` (1 on a fresh database) and, for `<name>`, the common name of the administrator's certificate (`$CLIENT` if it is the same client).
+The same command as in [running-locally.md](running-locally.md), run inside the server container (the image installs the `uudex-server` command). The participant from step 8 must exist; use its `participant_id` (1 on a fresh database) and, for `<name>`, the common name of the administrator's certificate (`$CLIENT` if it is the same client).
 
 ```bash
 docker compose --env-file .env.compose exec server uudex-server bootstrap-admin --cn <name> --participant-id <id>
@@ -150,7 +156,7 @@ Output, for a first run and for a second:
 
 ```text
 uudex-server: Loading settings from: environment
-uudex-server: database: postgresql+asyncpg://postgres_user:***@db:5432/uudex
+uudex-server: database: postgresql+asyncpg://postgres_user:***db:5432/uudex
 03878f3d-0ffb-429b-a880-2e2845e16f15
 ```
 
@@ -239,15 +245,15 @@ If 172.29.77.0/24 clashes with yours, change it in `compose.yaml` everywhere it 
 docker compose --env-file .env.compose down
 ```
 
-This removes the containers and networks and keeps the database volume, so the rows from step 7 are still there the next time you start. To delete the database as well and start clean, add `-v`. Add `--rmi local` to also remove the image compose built.
+This removes the containers and networks and keeps the database volume, so the rows from step 8 are still there the next time you start. To delete the database as well and start clean, add `-v`. Add `--rmi local` to also remove the image compose built.
 
 ## Remove everything
 
-`down` leaves the certificates, the secret copies and `.env.compose`. This removes everything these steps created, including the CA and client private keys. `<certs-dir>` holds a `.uudex-certs` marker and nothing you want to keep; check the path before you run `rm -r`.
+`down` leaves the certificates, the secret copies and `.env.compose`. This removes everything these steps created, including the CA and client private keys. `$UUDEX_CERTS` holds a `.uudex-certs` marker and nothing you want to keep; check the path before you run `rm -r`.
 
 ```bash
 docker compose --env-file .env.compose down -v --rmi local
-rm -r <certs-dir>
+rm -r "$UUDEX_CERTS"
 rm secrets/compose_postgres_password secrets/compose_postgres_dsn secrets/compose_messagebus_connection secrets/compose_x_ssl_cert .env.compose
 ```
 
