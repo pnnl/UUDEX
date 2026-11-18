@@ -112,7 +112,7 @@ async def create_subject(
         if isinstance(e, BrokerError):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to create message broker infrastructure: {str(e)}",
+                detail="Failed to create message broker infrastructure",
             ) from e
         raise
 
@@ -237,7 +237,7 @@ async def delete_subject(
         _log.exception("Broker delete_subject failed for subject %s", existing_subject.subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete message broker infrastructure: {str(e)}",
+            detail="Failed to delete message broker infrastructure",
         ) from e
 
     # Delete from database
@@ -369,11 +369,11 @@ async def publish_messages_to_subject(
                 message_ids.append(message_id)
                 published_count += 1
 
-    except BrokerError as e:
+    except BrokerError:
         _log.exception("Broker publish failed for subject %s", subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to publish messages: {str(e)}",
+            detail="Failed to publish messages",
         )
 
     return MessagePublishResponse(
@@ -514,12 +514,12 @@ async def manage_subject_queues(
                 detail=f"Unsupported action: {queue_request.action}",
             )
 
-    except Exception as e:
+    except Exception:
         # Wraps repository and model code as well as the broker, so it cannot name BrokerError.
         _log.exception("Queue management action %s failed", queue_request.action)
         return QueueManagementResponse(
             success=False,
-            message=f"Queue management operation failed: {str(e)}",
+            message="Queue management operation failed",
             queue_info=None,
             timestamp=datetime.utcnow(),
         )
@@ -569,11 +569,9 @@ async def bulk_subject_operations(
                     broker.delete_subject(
                         subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
                     )
-                except BrokerError as e:
+                except BrokerError:
                     _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
-                    failed.append(
-                        {"subject_uuid": subject_uuid, "error": f"Broker delete failed: {e}"}
-                    )
+                    failed.append({"subject_uuid": subject_uuid, "error": "Broker delete failed"})
                     continue
 
                 await repo.delete(subject)
@@ -613,12 +611,12 @@ async def bulk_subject_operations(
                     }
                 )
 
-        except Exception as e:
+        except Exception:
             # Wraps repository calls as well as the broker, so it cannot name BrokerError.
             _log.exception(
                 "Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid
             )
-            failed.append({"subject_uuid": subject_uuid, "error": str(e)})
+            failed.append({"subject_uuid": subject_uuid, "error": "Operation failed"})
 
     return BulkOperationResult(
         successful=successful,

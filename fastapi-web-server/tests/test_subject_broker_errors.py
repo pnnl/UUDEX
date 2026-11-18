@@ -118,6 +118,112 @@ class TestRealRepository:
             assert await subject_routes.pr.select_subject_by_id(session, created.subject_id) is None
 
 
+BROKER_SECRET = "brokeruser"
+SECRET_ERROR_TEXT = f"401 Unauthorized with user {BROKER_SECRET} :401"
+
+
+def assert_logged_not_returned(caplog, response_text):
+    assert BROKER_SECRET not in response_text
+    records = error_records(caplog)
+    assert any(BROKER_SECRET in str(r.exc_info[1]) for r in records)
+
+
+class TestLibraryTextStaysOutOfResponses:
+    async def test_create(self, session, admin_user, caplog):
+        repo = make_repo(make_subject())
+        broker = make_broker()
+        broker.create_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
+
+        assert_logged_not_returned(caplog, str(exc_info.value.detail))
+
+    async def test_single_delete(self, session, admin_user, caplog):
+        subject = make_subject()
+        broker = make_broker()
+        broker.delete_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=make_repo(subject)),
+            patch.object(
+                subject_routes.pr, "select_subject_by_id", new=AsyncMock(return_value=subject)
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await subject_routes.delete_subject(7, session, admin_user, broker)
+
+        assert_logged_not_returned(caplog, str(exc_info.value.detail))
+
+    async def test_publish(self, session, admin_user, caplog):
+        broker = make_broker()
+        broker.publish_message.side_effect = BrokerError(SECRET_ERROR_TEXT)
+
+        with (
+            patch.object(
+                subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await subject_routes.publish_messages_to_subject(
+                "subj-uuid", MessagePublishRequest(messages=["m"]), session, admin_user, broker
+            )
+
+        assert exc_info.value.detail == "Failed to publish messages"
+        assert_logged_not_returned(caplog, str(exc_info.value.detail))
+
+    async def test_bulk_delete_broker_error(self, session, admin_user, caplog):
+        broker = make_broker()
+        broker.delete_subject.side_effect = BrokerError(SECRET_ERROR_TEXT)
+
+        with patch.object(
+            subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+        ):
+            result = await subject_routes.bulk_subject_operations(
+                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                session,
+                admin_user,
+                broker,
+            )
+
+        assert_logged_not_returned(caplog, result.model_dump_json())
+
+    async def test_bulk_unexpected_error(self, session, admin_user, caplog):
+        repo = make_repo(make_subject())
+        repo.select_by_field.side_effect = RuntimeError(SECRET_ERROR_TEXT)
+
+        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+            result = await subject_routes.bulk_subject_operations(
+                BulkSubjectOperation(subject_uuids=["subj-uuid"], operation="delete"),
+                session,
+                admin_user,
+                make_broker(),
+            )
+
+        assert_logged_not_returned(caplog, result.model_dump_json())
+
+    async def test_queue_management_catch_all(self, session, admin_user, caplog):
+        broker = make_broker()
+        broker.delete_queue.side_effect = RuntimeError(SECRET_ERROR_TEXT)
+
+        with patch.object(
+            subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+        ):
+            result = await subject_routes.manage_subject_queues(
+                "subj-uuid",
+                QueueManagementRequest(action="delete", queue_name="q"),
+                session,
+                admin_user,
+                broker,
+            )
+
+        assert result.message == "Queue management operation failed"
+        assert_logged_not_returned(caplog, result.model_dump_json())
+
+
 class TestBulkDelete:
     async def test_broker_failure_is_logged_reported_and_keeps_row(
         self, session, admin_user, caplog
@@ -138,7 +244,7 @@ class TestBulkDelete:
         assert result.successful == []
         assert len(result.failed) == 1
         assert result.failed[0]["subject_uuid"] == "subj-uuid"
-        assert "exchange delete refused" in result.failed[0]["error"]
+        assert result.failed[0]["error"] == "Broker delete failed"
         repo.delete.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
@@ -177,7 +283,7 @@ class TestBulkDelete:
                 make_broker(),
             )
 
-        assert result.failed == [{"subject_uuid": "subj-uuid", "error": "db down"}]
+        assert result.failed == [{"subject_uuid": "subj-uuid", "error": "Operation failed"}]
         records = error_records(caplog)
         assert len(records) == 1
         assert isinstance(records[0].exc_info[1], RuntimeError)
@@ -247,7 +353,7 @@ class TestOtherHandlersLog:
 
         assert exc_info.value.status_code == 500
         assert exc_info.value.__cause__ is broker_error
-        assert "exchange delete refused" in exc_info.value.detail
+        assert exc_info.value.detail == "Failed to delete message broker infrastructure"
         repo.delete.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
@@ -284,7 +390,7 @@ class TestOtherHandlersLog:
 
         assert exc_info.value.status_code == 500
         assert exc_info.value.__cause__ is broker_error
-        assert "exchange create refused" in exc_info.value.detail
+        assert exc_info.value.detail == "Failed to create message broker infrastructure"
         repo.delete.assert_awaited_once_with(subject)
         assert len(error_records(caplog)) == 1
 
