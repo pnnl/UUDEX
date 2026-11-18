@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from uudex_server.core.settings import Settings
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from uudex_server.core.settings import Settings
 
 __services__: Services = None
 

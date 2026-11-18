@@ -29,7 +29,7 @@ class AuthorizationService:
     pass
 
     @staticmethod
-    def create(config: dict) -> AuthorizationService:
+    def create(config: dict) -> AuthorizationService:  # noqa: ARG004  (factory signature)
         return AuthorizationService()
 
 

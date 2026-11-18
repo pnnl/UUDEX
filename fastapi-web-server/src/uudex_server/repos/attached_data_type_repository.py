@@ -2,7 +2,6 @@ from sqlmodel import Session
 from sqlmodel import delete as _delete
 from sqlmodel import select as _select
 
-from uudex_server.models import AttachedDataType
 from uudex_server.models.attached_data_type_models import AttachedDataType
 from uudex_server.repos import Repository
 

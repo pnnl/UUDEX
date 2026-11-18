@@ -219,9 +219,7 @@ async def test_select_all_subscription_subjects(
         preferred_fulfillment_type="DATA_PUSH",
         backing_queue_name="what is this",
     )
-    created_subscription_subject = await subscription_subject_repo.create(
-        subscription_subject_create
-    )
+    await subscription_subject_repo.create(subscription_subject_create)
     subscription_subjects = await subscription_subject_repo.select_all()
     assert isinstance(subscription_subjects, list)
 
@@ -249,9 +247,7 @@ async def test_select_by_fields(
         preferred_fulfillment_type="DATA_PUSH",
         backing_queue_name="what is this",
     )
-    created_subscription_subject = await subscription_subject_repo.create(
-        subscription_subject_create
-    )
+    await subscription_subject_repo.create(subscription_subject_create)
     selected_subscription_subject = await subscription_subject_repo.select_by_fields(
         subscription_id=created_subscription.subscription_id, subject_id=created_subject.subject_id
     )

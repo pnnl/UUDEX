@@ -113,7 +113,7 @@ def test_full_database_seeding(api_session: Session):  # SQLAlchemy ORM session 
         (m.Subject, lambda s: s.attached_data_types, 1),  # Assuming such a relationship
     ],
 )
-@pytest.mark.xfail(reason="This needs to be re-evaluated!")
+@pytest.mark.xfail(reason="This needs to be re-evaluated!", strict=True)
 def test_database_relationships(api_session: Session, model_class, relationship, expected_count):
     stmt = select(model_class)
     instance = api_session.exec(stmt).first()

@@ -1,3 +1,4 @@
+import contextlib
 import uuid
 from datetime import datetime
 
@@ -155,7 +156,7 @@ async def update_subject(
     subject_update: SubjectUpdate,
     session: SessionDep,
     user: UserDep,
-    broker: UUDEXBrokerService = Depends(get_broker_service),
+    broker: UUDEXBrokerService = Depends(get_broker_service),  # noqa: ARG001  (dependency kept)
 ) -> Subject:
     """
     Update an existing subject with authorization checks.
@@ -531,12 +532,11 @@ async def bulk_subject_operations(
 
             if bulk_request.operation == "delete":
                 # Delete subject and its infrastructure
-                try:
+                # Continue with database deletion even if broker fails
+                with contextlib.suppress(Exception):
                     broker.delete_subject(
                         subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
                     )
-                except Exception:
-                    pass  # Continue with database deletion even if broker fails
 
                 await repo.delete(subject.subject_id)
                 successful.append(subject_uuid)
@@ -549,10 +549,9 @@ async def bulk_subject_operations(
                         subject_name=subject.subject_name,
                         subscription_uuid=sub_link.subscription_uuid,
                     )
-                    try:
+                    # Continue with other queues
+                    with contextlib.suppress(Exception):
                         broker.delete_queue(queue_name)
-                    except Exception:
-                        pass  # Continue with other queues
 
                 successful.append(subject_uuid)
 

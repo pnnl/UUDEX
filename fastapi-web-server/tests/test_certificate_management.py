@@ -20,7 +20,6 @@ from uudex_server.models import (
 )
 from uudex_server.models.authenticated_user import AuthenticatedUser
 from uudex_server.models.common_types import YNSwitch
-from uudex_server.models.endpoint_models import EndPoint
 
 XFAIL_16 = pytest.mark.xfail(
     strict=True, reason="#16: patches or imports the removed uudex_server.endpoints module"
