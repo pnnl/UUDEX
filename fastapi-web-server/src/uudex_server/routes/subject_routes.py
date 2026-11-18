@@ -485,8 +485,12 @@ async def manage_subject_queues(
             # This requires getting all subscription-subject relationships
             purged_queues = []
             failed_queues = []
+            shared = await _queues_shared_with_other_subjects(session, subject)
             for sub_link in subject.subscription_links:
                 queue_name = sub_link.backing_queue_name
+                if queue_name in shared:
+                    failed_queues.append(queue_name)
+                    continue
                 try:
                     # Note: RabbitMQ service has purge_queue method, but it's not in base class
                     # For now, we'll try to delete and recreate
@@ -502,6 +506,7 @@ async def manage_subject_queues(
                     message=(
                         f"Purged {len(purged_queues)} queues; "
                         f"failed to purge: {', '.join(failed_queues)}"
+                        f"{_shared_reason(shared)}"
                     ),
                     queue_info={"purged_queues": purged_queues, "failed_queues": failed_queues},
                     timestamp=datetime.utcnow(),
@@ -609,8 +614,12 @@ async def bulk_subject_operations(
             elif bulk_request.operation == "purge_queues":
                 # Purge all queues for the subject
                 failed_queues = []
+                shared = await _queues_shared_with_other_subjects(session, subject)
                 for sub_link in subject.subscription_links:
                     queue_name = sub_link.backing_queue_name
+                    if queue_name in shared:
+                        failed_queues.append(queue_name)
+                        continue
                     # Continue with other queues
                     try:
                         broker.delete_queue(queue_name)
@@ -622,7 +631,10 @@ async def bulk_subject_operations(
                     failed.append(
                         {
                             "subject_uuid": subject_uuid,
-                            "error": f"Failed to purge queues: {', '.join(failed_queues)}",
+                            "error": (
+                                f"Failed to purge queues: {', '.join(failed_queues)}"
+                                f"{_shared_reason(shared)}"
+                            ),
                         }
                     )
                 else:
@@ -672,6 +684,29 @@ async def _require_owned_queue(session: AsyncSession, subject: Subject, queue_na
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Queue is shared with another subject"
         )
+
+
+async def _queues_shared_with_other_subjects(session: AsyncSession, subject: Subject) -> set[str]:
+    """The stored queue names on `subject`'s links that another subject's link also stores.
+
+    Delete refuses these with 409; purge must not delete them either, since the other subject
+    still reads from the queue.
+    """
+    links = pr.SubscriptionSubjectRepository(session)
+    return {
+        link.backing_queue_name
+        for link in subject.subscription_links
+        if await links.count_other_subjects_storing_queue(
+            link.backing_queue_name, subject.subject_id
+        )
+    }
+
+
+def _shared_reason(shared: set[str]) -> str:
+    """Message suffix naming the queues a purge skipped because another subject stores them."""
+    if not shared:
+        return ""
+    return f"; shared with another subject, not purged: {', '.join(sorted(shared))}"
 
 
 def _trusted_exchange_or_409(subject: Subject) -> str:
