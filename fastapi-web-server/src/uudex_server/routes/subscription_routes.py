@@ -59,10 +59,12 @@ async def get_user_subscriptions(session: SessionDep, user: UserDep) -> list[Sub
 async def create_subscription(
     subscription: SubscriptionCreate, session: SessionDep, user: UserDep
 ) -> Subscription:
-    # TODO: Implement create_subscription method in repository
-    # For now, use a direct creation approach
-    sub: Subscription = await ssr.create_subscription(
-        session=session, user=user, subscription_add=subscription
+    # The caller owns what they create; an owner named in the body is not trusted.
+    endpoint = await session.merge(user.endpoint)
+    fields = subscription.model_dump(exclude={"owner_endpoint_id"})
+    repo = ssr.SubscriptionRepository(session)
+    sub: Subscription = await repo.create(
+        Subscription(**fields, owner_endpoint_id=endpoint.endpoint_id)
     )
     return sub
 
