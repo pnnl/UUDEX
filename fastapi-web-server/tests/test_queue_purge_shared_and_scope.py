@@ -71,3 +71,15 @@ class TestPurgeSkipsSharedNames:
         assert shared in body["failed"][0]["error"]
         assert "shared with another subject" in body["failed"][0]["error"]
         assert [call.args[0] for call in broker.delete_queue.call_args_list] == [own]
+
+
+class TestDeleteWithoutName:
+    @pytest.mark.parametrize("body", [{"action": "delete"}, {"action": "delete", "queue_name": ""}])
+    async def test_a_delete_without_a_queue_name_is_400(self, tag, broker, body):
+        participant, endpoint_id = await seed_owner(f"own-{tag}")
+        a, _ = await seed_linked_subject(participant, endpoint_id, "feeder")
+        async with client_with(broker) as c:
+            response = await manage(c, f"own-{tag}", a.subject_uuid, **body)
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Unsupported action: delete"
+        broker.delete_queue.assert_not_called()

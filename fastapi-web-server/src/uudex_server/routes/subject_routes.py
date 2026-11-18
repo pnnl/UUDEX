@@ -535,6 +535,8 @@ async def manage_subject_queues(
                 detail=f"Unsupported action: {queue_request.action}",
             )
 
+    except HTTPException:
+        raise
     except Exception:
         # Wraps repository and model code as well as the broker, so it cannot name BrokerError.
         _log.exception("Queue management action %s failed", queue_request.action)
