@@ -301,3 +301,29 @@ class TestTrustedExchangeName:
             async with main_module.lifespan(main_module.app):
                 pass
         failing.assert_awaited_once()
+
+
+class TestBulkCatchAllRollback:
+    async def test_a_non_broker_error_rolls_back_only_that_subjects_delete(self, tag, broker):
+        participant = await seed_owner(tag, admin=True)
+        a_uuid, b_uuid = new_uuid(), new_uuid()
+        await seed_subject(a_uuid, participant, name="a", exchange=f"e_{a_uuid}")
+        await seed_subject(b_uuid, participant, name="b", exchange=f"e_{b_uuid}")
+
+        def boom(*args, **kwargs):
+            if a_uuid in repr((args, kwargs)):
+                raise RuntimeError("not a BrokerError")
+
+        broker.delete_exchange.side_effect = boom
+        async with client_with(broker) as c:
+            response = await c.post(
+                "/subjects/bulk-operations",
+                json={"subject_uuids": [a_uuid, b_uuid], "operation": "delete"},
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["successful"] == [b_uuid]
+        assert [f["subject_uuid"] for f in body["failed"]] == [a_uuid]
+        assert len(await subject_rows(a_uuid)) == 1
+        assert await subject_rows(b_uuid) == []
