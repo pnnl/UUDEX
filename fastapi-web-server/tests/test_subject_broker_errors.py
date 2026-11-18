@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from fastapi import HTTPException
-from pyrabbit2 import http as pyrabbit_http
 from pyrabbit2 import api as pyrabbit_api
+from pyrabbit2 import http as pyrabbit_http
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from uudex_server.models.authenticated_user import AuthenticatedUser
@@ -317,9 +317,7 @@ class TestOtherHandlersLog:
         }
         assert len(error_records(caplog)) == 2
 
-    async def test_single_purge_partial_failure_is_not_a_success(
-        self, session, admin_user, caplog
-    ):
+    async def test_single_purge_partial_failure_is_not_a_success(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
         broker = make_broker()
         broker.delete_queue.side_effect = [BrokerError("queue gone"), 0]
