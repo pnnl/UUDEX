@@ -181,7 +181,7 @@ class TestSubjectByUuidRoute:
             await repo.create(make_subject(f"{tag}-other", other, "other"))
 
         async with trusted_client() as c:
-            response = await c.get(f"/subjects/uuid/{tag}-mine", headers=identity_headers(cn))
+            response = await c.get(f"/subject/uuid/{tag}-mine", headers=identity_headers(cn))
 
         assert response.status_code == 200
         body = response.json()
@@ -193,7 +193,7 @@ class TestSubjectByUuidRoute:
     async def test_unknown_uuid_is_404(self, cn, tag):
         await seed_endpoint(await seed_participant(), cn)
         async with trusted_client() as c:
-            response = await c.get(f"/subjects/uuid/{tag}-missing", headers=identity_headers(cn))
+            response = await c.get(f"/subject/uuid/{tag}-missing", headers=identity_headers(cn))
         assert response.status_code == 404
 
 
