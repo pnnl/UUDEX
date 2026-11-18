@@ -114,3 +114,26 @@ class TestConsumeAfterQueueDelete:
         assert body["total_consumed"] == 1
         assert [msg["message_id"] for msg in body["messages"]] == ["m1"]
         assert {call.args[0] for call in broker.get_messages.call_args_list} == {gone, kept}
+
+
+class TestDeleteScope:
+    async def test_an_admin_deleting_an_unstored_name_gets_404(self, tag, broker):
+        p1, e1 = await seed_owner(f"p1-{tag}")
+        await seed_owner(f"adm-{tag}", admin=True)
+        a, _ = await seed_linked_subject(p1, e1, "feeder")
+        async with client_with(broker) as c:
+            response = await manage(
+                c, f"adm-{tag}", a.subject_uuid, action="delete", queue_name=f"q_other_{tag}"
+            )
+        assert response.status_code == 404
+        broker.delete_queue.assert_not_called()
+
+    async def test_a_subject_with_no_links_gets_404_for_any_name(self, tag, broker):
+        participant, _ = await seed_owner(f"own-{tag}")
+        subject = await seed_subject(new_uuid(), participant, name="bare")
+        async with client_with(broker) as c:
+            response = await manage(
+                c, f"own-{tag}", subject.subject_uuid, action="delete", queue_name=f"q_any_{tag}"
+            )
+        assert response.status_code == 404
+        broker.delete_queue.assert_not_called()
