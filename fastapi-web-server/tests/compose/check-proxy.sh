@@ -242,18 +242,41 @@ check_refusals() {
 # empty result after NET_TIMEOUT, never as a hang.
 s_client() { timeout --foreground -k 5 "$NET_TIMEOUT" openssl s_client "$@" </dev/null 2>&1; }
 
+# The last line of <text> that looks like an error, for a failure message. No such line is a
+# normal answer (grep exits 1), and then the message shows an empty line.
+last_error_line() {
+  local l
+  l=$(/usr/bin/grep -iE 'error|alert|errno|connect|timeout' <<<"$1" | tail -n 1) || l=""
+  printf '%s' "${l:0:160}"
+}
+
+# Seconds since the proxy started, or "unknown", for the same messages.
+proxy_age() {
+  local start now
+  if start=$(started_ns) && now=$(date +%s%N); then
+    printf '%ss' $(((now - start) / 1000000000))
+  else
+    printf 'unknown'
+  fi
+}
+
 # TLS 1.1 goes through openssl: curl's own build may refuse to offer it, which would be
 # the client failing and not the proxy refusing.
 check_tls11() {
-  local name="TLS 1.1 is refused" err
+  local name="TLS 1.1 is refused" err rc=0
   local -a base=(-connect "localhost:$PORT" -servername localhost -CAfile "$CERTS/ca.crt"
     -cert "$CERTS/$CLIENT.crt" -key "$CERTS/$CLIENT.key" -cipher 'ALL:@SECLEVEL=0')
   control_ok || { fail "$name (control: valid client did not get 200, stack is down or misconfigured)"; return; }
-  # s_client exits non-zero when the handshake is refused or times out; both cases are
-  # judged from its text below, so the status is not needed.
-  err=$(s_client "${base[@]}" -tls1_2) || true
+  # s_client exits non-zero when the handshake is refused or times out. The control is judged
+  # from its text, and a failure reports the status, size, last error line and proxy age,
+  # because one false failure in 31 runs has no known cause and is not retried away.
+  err=$(s_client "${base[@]}" -tls1_2) || rc=$?
   /usr/bin/grep -qE 'Cipher is [A-Z0-9]' <<<"$err" \
-    || { fail "$name (control: TLS 1.2 handshake failed)"; return; }
+    || {
+      fail "$name (control: TLS 1.2 handshake failed: s_client exit $rc, ${#err} bytes, last error line '$(last_error_line "$err")', proxy age $(proxy_age))"
+      return
+    }
+  # A refused TLS 1.1 handshake exits non-zero too; the alert text decides, not the status.
   err=$(s_client "${base[@]}" -tls1_1) || true
   if /usr/bin/grep -q 'alert protocol version' <<<"$err"; then
     pass "$name"
