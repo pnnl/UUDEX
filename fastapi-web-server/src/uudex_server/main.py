@@ -15,7 +15,8 @@ from uudex_server.core.client_cert import (
     parse_forwarded_cert,
 )
 from uudex_server.core.settings import Settings, get_settings
-from uudex_server.services.database_service import init_db, shutdown_db
+from uudex_server.repos.subscription_and_subject_repositories import warn_untrusted_exchange_names
+from uudex_server.services.database_service import get_db_session, init_db, shutdown_db
 
 logger = get_logger("uudex_server.main")
 logger.debug("Starting UUDEX Server")
@@ -55,10 +56,20 @@ warn_if_no_trusted_proxies(settings.trusted_proxy_hosts)
 from uudex_server.routes import add_routers  # noqa: E402  (deliberately after settings init)
 
 
+async def _scan_exchange_names() -> None:
+    """Log unusable stored broker names. A failed scan is logged and never stops startup."""
+    try:
+        async with get_db_session() as session:
+            await warn_untrusted_exchange_names(session)
+    except Exception:
+        logger.exception("Scan of stored broker exchange names failed")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         await init_db()
+        await _scan_exchange_names()
         yield
     finally:
         await shutdown_db()

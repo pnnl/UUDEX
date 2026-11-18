@@ -42,7 +42,8 @@ class SubjectCreate(SubjectBase):
     """Model for creating a new subject"""
 
     # Make some fields optional for creation
-    subject_uuid: str | None = None  # Auto-generate if not provided
+    # Accepted for older clients and ignored: the route always generates the uuid.
+    subject_uuid: str | None = None
     owner_participant_id: int | None = None  # Set from user context
     dataset_definition_id: int | None = None  # Set from context or default
     # Accepted for older clients and ignored: the route builds the name the broker creates.
