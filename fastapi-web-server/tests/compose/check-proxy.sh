@@ -6,6 +6,22 @@
 # Run it against a stack already started and seeded as described in README, "Compose".
 # It does not start, stop or seed anything and never writes to the database.
 #
+# The property: the proxy runs the bytes it read at its last start, those bytes are the
+# committed Traefik files and a ca.crt holding one certificate, and the files it would read at
+# its next start say the same. After changing any mounted file, ca.crt included, recreate the
+# proxy (up -d --force-recreate proxy): a change after the proxy started fails the run, even
+# a restore.
+# Not caught: a clock set back by hand, or stepped back by NTP further than the gap between the
+# proxy's start and the change; a change made and undone before the start; a file system where
+# unlinking the last link does not move ctime (a replace is then seen by the content compares
+# only); a write from inside the container or a forged ctime; a Docker socket forwarded from
+# another host, which passes the local-daemon check.
+#
+# Signals: HUP, INT, QUIT and TERM to the whole process group (a terminal, kill -- -PGID) end
+# the run at once with exit 129, 130, 131 or 143. Sent to the script's PID alone they act when
+# the running call returns, at most 65 seconds later. KILL cannot be caught: the running call
+# ends at its bound, no later check starts, and the temporary folder is left.
+#
 # Out of scope: someone with Docker access acting on purpose (they can start a container at
 # the proxy's address). This finds drift and mistakes, not an attacker with Docker.
 #
