@@ -55,7 +55,9 @@ def make_subject(links=("sub-a", "sub-b")):
         subject_name="subj",
         owner_participant_id=1,
         backing_exchange_name=f"e_{SUBJ_UUID}",
-        subscription_links=[SimpleNamespace(subscription_uuid=u) for u in links],
+        subscription_links=[
+            SimpleNamespace(subscription_uuid=u, backing_queue_name=f"q_{u}") for u in links
+        ],
     )
 
 
@@ -70,10 +72,18 @@ def make_broker():
 def make_repo(subject):
     repo = Mock()
     repo.select_by_field = AsyncMock(return_value=subject)
+    repo.select_by_uuid_with_links = AsyncMock(return_value=subject)
     repo.create = AsyncMock(return_value=subject)
     # Mirrors Repository.delete, which reads the id fields off the object it is given.
     repo.delete = AsyncMock(side_effect=lambda obj, **_kwargs: obj.subject_id)
     return repo
+
+
+def unshared_queues():
+    """Patch the link repository so the delete path finds no other subject storing the name."""
+    link_repo = Mock()
+    link_repo.count_other_subjects_storing_queue = AsyncMock(return_value=0)
+    return patch.object(subject_routes.pr, "SubscriptionSubjectRepository", return_value=link_repo)
 
 
 def make_subject_create():
@@ -206,8 +216,11 @@ class TestLibraryTextStaysOutOfResponses:
         broker = make_broker()
         broker.delete_queue.side_effect = RuntimeError(SECRET_ERROR_TEXT)
 
-        with patch.object(
-            subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+        with (
+            patch.object(
+                subject_routes.pr, "SubjectRepository", return_value=make_repo(make_subject())
+            ),
+            unshared_queues(),
         ):
             result = await subject_routes.manage_subject_queues(
                 SUBJ_UUID,
@@ -532,7 +545,10 @@ class TestOtherHandlersLog:
         broker = make_broker()
         broker.delete_queue.side_effect = RuntimeError("boom")
 
-        with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
+        with (
+            patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
+            unshared_queues(),
+        ):
             result = await subject_routes.manage_subject_queues(
                 SUBJ_UUID,
                 QueueManagementRequest(action="delete", queue_name="q_sub-a"),
