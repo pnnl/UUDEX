@@ -98,9 +98,10 @@ Causes seen while checking these steps:
 
 Identity comes from the certificate, but the server also needs an endpoint row for it. An administrator can create one through the API, but the first administrator does not exist yet, so insert a participant and an endpoint whose `certificate_dn` is the certificate's common name.
 
-`-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The tables have no unique constraint on these values, so running plain `insert` statements twice silently stores the rows twice (and a second endpoint for the same client). The `where not exists` guards make this step safe to run again.
+`-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The tables have no unique constraint on these values, so running plain `insert` statements twice silently stores the rows twice (and a second endpoint for the same client). The `where not exists` guards make this step safe to run again. The parentheses make the checks and the database command one unit, so a missing value stops the command even when you paste the block into an interactive shell.
 
 ```bash
+(
 : "${CLIENT:?set CLIENT first (step 1)}"
 : "${PARTICIPANT_UUID:?set PARTICIPANT_UUID first (step 1)}"
 : "${PARTICIPANT_SHORT:?set PARTICIPANT_SHORT first (step 1)}"
@@ -117,6 +118,7 @@ insert into endpoint (active_sw, endpoint_uuid, endpoint_user_name, certificate_
   where participant_uuid = '$PARTICIPANT_UUID'
     and not exists (select 1 from endpoint where certificate_dn = '$CLIENT');
 SQL
+)
 ```
 
 The first run prints `INSERT 0 1` twice; a second run prints `INSERT 0 0` twice. When a statement fails, the output ends with the error and the command exits 3, for example:

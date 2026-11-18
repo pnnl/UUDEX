@@ -43,7 +43,7 @@ Both exit 0 on this commit. `ruff check` prints nothing when it finds nothing; t
 
 ## The proxy check script
 
-`tests/compose/check-proxy.sh` checks a running stack. It does not start, stop or seed anything and never writes to the database. Start and seed the stack first: [running-the-stack.md](running-the-stack.md), steps 1 to 7.
+`tests/compose/check-proxy.sh` checks a running stack. It does not start, stop or seed anything and never writes to the database. Start and seed the stack first: [running-the-stack.md](running-the-stack.md), steps 1 to 8.
 
 ```bash
 tests/compose/check-proxy.sh <certs-dir> uudex alice
