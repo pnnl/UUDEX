@@ -33,11 +33,12 @@ async def test_consume_reads_each_stored_name_after_a_rename(tag, broker):
     for subject_id, name in stored.items():
         await seed_link(subject_id, subscription_id, name)
     async with client_with(broker) as c:
-        await c.put(
+        renamed = await c.put(
             f"/subject/{a.subject_id}",
             json={"subject_name": "renamed"},
             headers=identity_headers(f"own-{tag}"),
         )
+        assert renamed.status_code == 200, renamed.text
         with patch.object(subscription_routes, "message_broker_factory", lambda _: broker):
             response = await c.post(
                 f"/subscription/{subscription_uuid}/consume",

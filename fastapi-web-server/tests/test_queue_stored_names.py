@@ -157,11 +157,12 @@ class TestRenameDoesNotWidenOwnership:
         p1, e1 = await seed_owner(f"p1-{tag}")
         a, a_queue = await seed_linked_subject(p1, e1, "feeder")
         async with client_with(broker) as c:
-            await c.put(
+            renamed = await c.put(
                 f"/subject/{a.subject_id}",
                 json={"subject_name": "grid"},
                 headers=identity_headers(f"p1-{tag}"),
             )
+            assert renamed.status_code == 200, renamed.text
             response = await manage(
                 c, f"p1-{tag}", a.subject_uuid, action="delete", queue_name=a_queue
             )
