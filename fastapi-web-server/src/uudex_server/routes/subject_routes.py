@@ -4,6 +4,7 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from uudex_server.core import get_settings
 from uudex_server.core.dependencies import SessionDep, UserDep
@@ -449,7 +450,7 @@ async def manage_subject_queues(
     """
     # Get subject and verify authorization
     repo = pr.SubjectRepository(session)
-    subject = await repo.select_by_field("subject_uuid", subject_uuid)
+    subject = await repo.select_by_uuid_with_links(subject_uuid)
 
     if subject is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
@@ -467,18 +468,7 @@ async def manage_subject_queues(
     info_exchange = _trusted_exchange_or_409(subject) if queue_request.action == "info" else ""
 
     if queue_request.action == "delete" and queue_request.queue_name:
-        # Raised outside the try below, whose catch-all would turn this into a 200 failure body.
-        # An unowned name gets the unknown-subject answer so it does not confirm the queue exists.
-        owned_queues = {
-            broker.build_queue_name(
-                tag="uudex",
-                subject_name=subject.subject_name,
-                subscription_uuid=sub_link.subscription_uuid,
-            )
-            for sub_link in subject.subscription_links
-        }
-        if queue_request.queue_name not in owned_queues:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
+        await _require_owned_queue(session, subject, queue_request.queue_name)
 
     try:
         if queue_request.action == "info":
@@ -496,11 +486,7 @@ async def manage_subject_queues(
             purged_queues = []
             failed_queues = []
             for sub_link in subject.subscription_links:
-                queue_name = broker.build_queue_name(
-                    tag="uudex",
-                    subject_name=subject.subject_name,
-                    subscription_uuid=sub_link.subscription_uuid,
-                )
+                queue_name = sub_link.backing_queue_name
                 try:
                     # Note: RabbitMQ service has purge_queue method, but it's not in base class
                     # For now, we'll try to delete and recreate
@@ -586,7 +572,7 @@ async def bulk_subject_operations(
 
     for subject_uuid in bulk_request.subject_uuids:
         try:
-            subject = await repo.select_by_field("subject_uuid", subject_uuid)
+            subject = await repo.select_by_uuid_with_links(subject_uuid)
             if subject is None:
                 failed.append({"subject_uuid": subject_uuid, "error": "Subject not found"})
                 continue
@@ -624,11 +610,7 @@ async def bulk_subject_operations(
                 # Purge all queues for the subject
                 failed_queues = []
                 for sub_link in subject.subscription_links:
-                    queue_name = broker.build_queue_name(
-                        tag="uudex",
-                        subject_name=subject.subject_name,
-                        subscription_uuid=sub_link.subscription_uuid,
-                    )
+                    queue_name = sub_link.backing_queue_name
                     # Continue with other queues
                     try:
                         broker.delete_queue(queue_name)
@@ -673,6 +655,23 @@ async def bulk_subject_operations(
 # =====================================================
 # HELPER FUNCTIONS
 # =====================================================
+
+
+async def _require_owned_queue(session: AsyncSession, subject: Subject, queue_name: str) -> None:
+    """Raise unless `queue_name` is stored on one of the subject's own links.
+
+    Raised outside the caller's try, whose catch-all would turn it into a 200 failure body. An
+    unowned name gets the unknown-subject answer so it does not confirm the queue exists.
+    """
+    if queue_name not in {link.backing_queue_name for link in subject.subscription_links}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
+    shared = await pr.SubscriptionSubjectRepository(session).count_other_subjects_storing_queue(
+        queue_name, subject.subject_id
+    )
+    if shared:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Queue is shared with another subject"
+        )
 
 
 def _trusted_exchange_or_409(subject: Subject) -> str:
