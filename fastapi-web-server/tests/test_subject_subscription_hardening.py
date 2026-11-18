@@ -155,9 +155,7 @@ class TestExchangeNameIsServerOwned:
 class TestSubscriptionUuidIsServerOwned:
     async def post_subscription(self, c: AsyncClient, cn: str, **fields: object):
         body = {"subscription_name": "n", "subscription_state": "ACTIVE", "owner_endpoint_id": 0}
-        return await c.post(
-            "/subscription/", json={**body, **fields}, headers=identity_headers(cn)
-        )
+        return await c.post("/subscription/", json={**body, **fields}, headers=identity_headers(cn))
 
     async def test_a_second_caller_reusing_a_uuid_cannot_break_the_first(self, tag, broker):
         first_endpoint = await seed_endpoint(await seed_participant(), f"first-{tag}")
@@ -285,9 +283,7 @@ class TestUpdateAndDeleteAsOwner:
         assert stored is not None
         assert (stored.priority, stored.subject_name) == (7, "one")
 
-    @pytest.mark.parametrize(
-        "field", ["subject_name", "dataset_instance_key", "subscription_type"]
-    )
+    @pytest.mark.parametrize("field", ["subject_name", "dataset_instance_key", "subscription_type"])
     async def test_put_with_a_null_for_a_required_column_is_422(self, tag, broker, field):
         participant = await seed_participant()
         await seed_endpoint(participant, f"own-{tag}")
@@ -325,9 +321,7 @@ class TestUpdateAndDeleteAsOwner:
             )
         assert response.status_code == 200, response.text
         assert await stored_subject(f"{tag}-one") is None
-        broker.delete_subject.assert_called_once_with(
-            subject_name="one", subject_uuid=f"{tag}-one"
-        )
+        broker.delete_subject.assert_called_once_with(subject_name="one", subject_uuid=f"{tag}-one")
 
     async def test_non_owner_delete_is_403_and_touches_nothing(self, tag, broker):
         await seed_endpoint(await seed_participant(), f"other-{tag}")
@@ -425,7 +419,9 @@ class TestDeleteWithForeignKeysEnforced:
             )
         assert response.status_code == 200, response.text
         assert await stored_subject(f"{tag}-free") is None
-        broker.delete_subject.assert_called_once_with(subject_name="free", subject_uuid=f"{tag}-free")
+        broker.delete_subject.assert_called_once_with(
+            subject_name="free", subject_uuid=f"{tag}-free"
+        )
 
     async def test_bulk_delete_skips_the_linked_subject_and_deletes_the_rest(
         self, foreign_keys_on, tag, broker
@@ -442,7 +438,9 @@ class TestDeleteWithForeignKeysEnforced:
         assert body["successful"] == [f"{tag}-free"]
         assert [f["subject_uuid"] for f in body["failed"]] == [f"{tag}-linked"]
         assert "linked" in body["failed"][0]["error"]
-        broker.delete_subject.assert_called_once_with(subject_name="free", subject_uuid=f"{tag}-free")
+        broker.delete_subject.assert_called_once_with(
+            subject_name="free", subject_uuid=f"{tag}-free"
+        )
         assert await stored_subject(f"{tag}-linked") is not None
         assert await stored_subject(f"{tag}-free") is None
         assert await link_count(linked.subject_id) == 1
