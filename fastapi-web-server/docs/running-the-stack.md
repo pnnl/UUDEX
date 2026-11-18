@@ -1,6 +1,6 @@
 # Running the stack with the proxy
 
-Checked against commit edaf169. The troubleshooting, seed, wiring and remove-everything parts were re-run at a06f91c (only documentation differs between the two).
+Checked against commit edaf169. The troubleshooting, seed, wiring and remove-everything parts were re-run at a06f91c (only documentation differs between the two). The shell variables (`CLIENT`, `BASE` and the others in step 4) and the unquoted step 7 heredoc were added at f5b05cb and were not re-run against a live stack; the example outputs are unchanged from those runs.
 
 `compose.yaml` starts the server, PostgreSQL and a Traefik proxy that verifies client certificates. The values in the example files are for local development only. They are not for real deployment.
 
@@ -34,14 +34,26 @@ chmod 0700 secrets
 
 ## 4. Make the certificates
 
-Run this as the user who will run compose. The script writes to the folder in `UUDEX_CERTS` (or `-o`), never into this repository. `alice` is a client; `--domain localhost` makes the server certificate (`localhost.crt`, `localhost.key`). The folder `<certs-dir>` is one you choose; the script makes it with mode 700 and refuses one that other users can write.
+Choose your values once and set them in your shell; later steps and [calling-the-api.md](calling-the-api.md) use the same names. Put in your own client common name (CN) and participant: `alice` and `p-0001` are only the examples used in the outputs.
 
 ```bash
-export UUDEX_CERTS=<certs-dir>
-../infrastructure/certs/generate-certs.sh alice --domain localhost
+CLIENT=alice
+PARTICIPANT_UUID=p-0001
+PARTICIPANT_SHORT=org
+PARTICIPANT_LONG=Organization
+ENDPOINT_UUID=e-alice-0001
+BASE=https://localhost:8443    # change for a different host or port
+C=<certs-dir>
 ```
 
-It prints the paths it wrote and ends with a `curl` example. That example omits the port; this stack listens on 8443. The client bundle `alice.p12` (for a browser) has the password `changeme`. More options: `../infrastructure/certs/README.md`.
+Run this as the user who will run compose. The script writes to the folder in `UUDEX_CERTS` (or `-o`), never into this repository. `$CLIENT` is a client; `--domain localhost` makes the server certificate (`localhost.crt`, `localhost.key`). The folder `<certs-dir>` is one you choose; the script makes it with mode 700 and refuses one that other users can write.
+
+```bash
+export UUDEX_CERTS=$C
+../infrastructure/certs/generate-certs.sh $CLIENT --domain localhost
+```
+
+It prints the paths it wrote and ends with a `curl` example. That example omits the port; this stack listens on 8443 (`$BASE`). The client bundle `$CLIENT.p12` (for a browser) has the password `changeme`. More options: `../infrastructure/certs/README.md`.
 
 ## 5. Tell compose where they are
 
@@ -83,21 +95,21 @@ Causes seen while checking these steps:
 
 ## 7. Add the client to the database
 
-Identity comes from the certificate, but the server also needs an endpoint row for it, and no admin route creates one yet. Insert a participant and an endpoint whose `certificate_dn` is the certificate's common name.
+Identity comes from the certificate, but the server also needs an endpoint row for it. An administrator can create one through the API, but the first administrator does not exist yet, so insert a participant and an endpoint whose `certificate_dn` is the certificate's common name.
 
 `-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The tables have no unique constraint on these values, so running plain `insert` statements twice silently stores the rows twice (and a second endpoint for the same client). The `where not exists` guards make this step safe to run again.
 
 ```bash
-docker compose --env-file .env.compose exec -T db psql -1 -v ON_ERROR_STOP=1 -U postgres_user -d uudex <<'SQL'
+docker compose --env-file .env.compose exec -T db psql -1 -v ON_ERROR_STOP=1 -U postgres_user -d uudex <<SQL
 insert into participant (active_sw, participant_uuid, participant_short_name, participant_long_name, root_org_sw)
-  select 'Y', 'p-0001', 'org', 'Organization', 'Y'
-  where not exists (select 1 from participant where participant_uuid = 'p-0001');
+  select 'Y', '$PARTICIPANT_UUID', '$PARTICIPANT_SHORT', '$PARTICIPANT_LONG', 'Y'
+  where not exists (select 1 from participant where participant_uuid = '$PARTICIPANT_UUID');
 insert into endpoint (active_sw, endpoint_uuid, endpoint_user_name, certificate_dn, description,
     uudex_administrator_sw, participant_administrator_sw, participant_id)
-  select 'Y', 'e-alice-0001', 'alice', 'alice', 'local development client', 'N', 'N', participant_id
+  select 'Y', '$ENDPOINT_UUID', '$CLIENT', '$CLIENT', 'local development client', 'N', 'N', participant_id
   from participant
-  where participant_uuid = 'p-0001'
-    and not exists (select 1 from endpoint where certificate_dn = 'alice');
+  where participant_uuid = '$PARTICIPANT_UUID'
+    and not exists (select 1 from endpoint where certificate_dn = '$CLIENT');
 SQL
 ```
 
@@ -107,17 +119,16 @@ The first run prints `INSERT 0 1` twice; a second run prints `INSERT 0 0` twice.
 ERROR:  relation "nosuchtable" does not exist
 ```
 
-Leave out `-T` and the heredoc to get an interactive `psql` instead.
+The heredoc is unquoted so the shell fills in your values; keep them free of quotes and spaces. Leave out `-T` and the heredoc to get an interactive `psql` instead.
 
 ## 8. Check it
 
 The proxy listens on `127.0.0.1:8443`. `UUDEX_PROXY_BIND` changes the address; leave it on loopback unless clients must reach the proxy from other machines. Run the first check before the others: it shows that a valid client gets through on this port, so a failure in the next two means the certificate was refused and not that the stack is down or the port is wrong. The proxy refuses at the TLS handshake, so there is no HTTP status for the refused ones; each ends with the error shown.
 
 ```bash
-C=<certs-dir>
-curl --cacert $C/ca.crt --cert $C/alice.crt --key $C/alice.key https://localhost:8443/endpoint/me   # 200, with e-alice-0001 in the body
-curl --cacert $C/ca.crt https://localhost:8443/                  # fails: "tlsv13 alert certificate required"
-curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: "ssl/tls alert bad certificate"
+curl --cacert $C/ca.crt --cert $C/$CLIENT.crt --key $C/$CLIENT.key $BASE/endpoint/me   # 200, with $ENDPOINT_UUID in the body
+curl --cacert $C/ca.crt $BASE/                  # fails: "tlsv13 alert certificate required"
+curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key $BASE/   # fails: "ssl/tls alert bad certificate"
 ```
 
 If the first check does not print `200`:
@@ -129,7 +140,7 @@ For the full set of proxy checks, run `tests/compose/check-proxy.sh`: see [testi
 
 ## Add the first administrator
 
-The same command as in [running-locally.md](running-locally.md), run inside the server container (the image installs the `uudex-server` command). The participant from step 7 must exist; use its `participant_id` (1 on a fresh database).
+The same command as in [running-locally.md](running-locally.md), run inside the server container (the image installs the `uudex-server` command). The participant from step 7 must exist; use its `participant_id` (1 on a fresh database) and, for `<name>`, the common name of the administrator's certificate (`$CLIENT` if it is the same client).
 
 ```bash
 docker compose --env-file .env.compose exec server uudex-server bootstrap-admin --cn <name> --participant-id <id>

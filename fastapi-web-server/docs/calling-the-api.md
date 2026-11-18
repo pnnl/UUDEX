@@ -1,20 +1,27 @@
 # Calling the API with a client certificate
 
-Checked against commit edaf169.
+Checked against commit f5b05cb (the code and the descriptions). The example outputs below were captured at edaf169 and were not re-run at f5b05cb; the routes they come from are unchanged except as noted.
 
-The running stack from [running-the-stack.md](running-the-stack.md) is assumed: the proxy answers on `https://localhost:8443`, the client `alice` has a certificate, and the participant and endpoint rows for `alice` exist (step 7 there). Every request must present a client certificate, and the server takes the caller's identity from it.
+The running stack from [running-the-stack.md](running-the-stack.md) is assumed: the proxy answers on `$BASE`, your client has a certificate, and the participant and endpoint rows for it exist (step 7 there). Every request must present a client certificate, and the server takes the caller's identity from it.
 
-Set these once in your shell. `<certs-dir>` is the folder you gave `generate-certs.sh`:
+Set these once in your shell, and put in your own client common name (CN) and participant. The values shown are the examples used in the outputs on this page, and `running-the-stack.md` uses the same names. `<certs-dir>` is the folder you gave `generate-certs.sh`. Change `BASE` if the proxy is on another host or port:
 
 ```bash
+BASE=https://localhost:8443
+CLIENT=alice
+PARTICIPANT_UUID=p-0001
 C=<certs-dir>
-api() { curl -sS --cacert $C/ca.crt --cert $C/alice.crt --key $C/alice.key -w '\n-> %{http_code}\n' "$@"; }
+api() { curl -sS --cacert $C/ca.crt --cert $C/$CLIENT.crt --key $C/$CLIENT.key -w '\n-> %{http_code}\n' "$@"; }
 ```
+
+Every call below needs a certificate whose CN has an active endpoint row. Without one the answer is `401`, see the end of this page.
 
 ## Who am I
 
+`/endpoint/me` shows which endpoint the server thinks your certificate is: your endpoint row, with its participant, your administrator flags and whether it is active. Call it first to check that the certificate, the proxy and the database row agree. Any caller may use it; it returns only the caller's own row.
+
 ```bash
-api https://localhost:8443/endpoint/me
+api $BASE/endpoint/me
 ```
 
 ```text
@@ -26,14 +33,22 @@ The `endpoint_uuid` is the row from the database whose `certificate_dn` equals t
 
 ## List things
 
-These return `200` on a fresh database. The lists are empty until something is created:
+These return `200` on a fresh database. The lists are empty until something is created. What each one gives you, from the route code:
+
+| Call | What it returns | Who sees what |
+|---|---|---|
+| `/participants/` | Every participant (organization) in the exchange. Use it to find a `participant_id`. | Any caller sees all of them. Creating one is a `POST` for administrators only. |
+| `/endpoint/` | The endpoints (client identities). Use it to see who else is registered. | An administrator sees all; anyone else sees only the endpoints of their own participant. |
+| `/datasets/` | Metadata of datasets (name, size, hash, subject), without the payload. | Only datasets owned by your participant, for everyone, administrators included. |
+| `/subjects/` | The subjects (topics) that datasets and subscriptions attach to. | An administrator sees all; anyone else sees only subjects their participant owns. |
+| `/subscriptions/` | The subscriptions you own. `/subscriptions/admin` lists everyone's. | Your own endpoint's only; `/subscriptions/admin` is administrators only. |
 
 ```bash
-api https://localhost:8443/participants/
-api https://localhost:8443/endpoint/
-api https://localhost:8443/datasets/
-api https://localhost:8443/subjects/
-api https://localhost:8443/subscriptions/
+api $BASE/participants/
+api $BASE/endpoint/
+api $BASE/datasets/
+api $BASE/subjects/
+api $BASE/subscriptions/
 ```
 
 ```text
@@ -41,10 +56,12 @@ api https://localhost:8443/subscriptions/
 -> 200
 ```
 
-(That output is from `/participants/`; the last three print `[]` and `-> 200`.) A missing id gives a 404 with a reason:
+(That output is from `/participants/`; your own is the row whose `participant_uuid` is `$PARTICIPANT_UUID`. `/endpoint/` shows the one endpoint from step 7, and the last three print `[]` and `-> 200`.)
+
+`/endpoint/{endpoint_id}` returns one endpoint by its numeric id, so you can look up a single row. You may read your own participant's endpoints; an administrator may read any. A missing id gives a 404 with a reason, and an id from another participant gives a 403:
 
 ```bash
-api https://localhost:8443/endpoint/999
+api $BASE/endpoint/999
 ```
 
 ```text
@@ -52,16 +69,18 @@ api https://localhost:8443/endpoint/999
 -> 404
 ```
 
+Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one subject (your participant's, or any for an administrator; `403` otherwise, `404` when missing), and `/subject/{subject_uuid}/queue-info` reports the state of the subject's message queues on the broker. The stack has no RabbitMQ, so the queue call has nothing to talk to there.
+
 ## The API reference
 
-`https://localhost:8443/docs` is Swagger UI, and `https://localhost:8443/openapi.json` is the schema. Both go through the proxy, so a browser needs the client certificate too: import `alice.p12` (its password is printed by `generate-certs.sh`) and the CA certificate `ca.crt`. A browser was not used for this check; the same two paths answer `200` to the `curl` command above.
+`$BASE/docs` is Swagger UI, and `$BASE/openapi.json` is the schema: they list every route, including the ones this page does not call. Both go through the proxy, so a browser needs the client certificate too: import `$CLIENT.p12` (its password is printed by `generate-certs.sh`) and the CA certificate `ca.crt`. A browser was not used for this check; the same two paths answer `200` to the `curl` command above.
 
 ## What a refused call looks like
 
 The proxy refuses at the TLS handshake, so there is no HTTP status. `curl` ends with an error:
 
 ```bash
-curl --cacert $C/ca.crt https://localhost:8443/
+curl --cacert $C/ca.crt $BASE/
 ```
 
 ```text
@@ -73,7 +92,7 @@ The server certificate used as a client gives `ssl/tls alert bad certificate`, a
 A certificate that the proxy accepts but whose common name has no endpoint row reaches the server, and the server answers `401`. The example uses a second client, made with `../infrastructure/certs/generate-certs.sh bob` into the same folder and not added to the database:
 
 ```bash
-curl -sS --cacert $C/ca.crt --cert $C/bob.crt --key $C/bob.key https://localhost:8443/endpoint/me -w '\n-> %{http_code}\n'
+curl -sS --cacert $C/ca.crt --cert $C/bob.crt --key $C/bob.key $BASE/endpoint/me -w '\n-> %{http_code}\n'
 ```
 
 ```text
@@ -81,6 +100,7 @@ curl -sS --cacert $C/ca.crt --cert $C/bob.crt --key $C/bob.key https://localhost
 -> 401
 ```
 
-## Not working yet
+## Known limits
 
-On this commit, `/subject/uuid/{subject_uuid}` and `/subject/{subject_uuid}/queue-info` return `500` (both were called for this check). The cause is in pnnl/UUDEX#67: the repository calls a method the async session does not have, and the issue lists reads by id, updates and deletes as affected. A fix is open as pnnl/UUDEX#74. The calls on this page do not touch it.
+* Everything above is read-only. Writes (`POST` for datasets, subjects, subscriptions, participants and endpoints, and the `PUT` and `DELETE` on subjects) exist; see `$BASE/docs` for their bodies. Participants and endpoints can be created only by an administrator, and the very first administrator comes from `uudex-server bootstrap-admin`, not from the API (see [running-the-stack.md](running-the-stack.md)).
+* The subject-by-uuid and queue-info calls returned `500` at edaf169 because the repository called a method the async session does not have (pnnl/UUDEX#67). That fix, pnnl/UUDEX#74, is merged and the repository code now reads rows through `select_by_field`. These two calls were not re-run against a live stack at f5b05cb. The queue-info call also needs a message broker, which the compose stack does not include.
