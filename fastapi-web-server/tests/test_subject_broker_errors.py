@@ -200,7 +200,7 @@ class TestLibraryTextStaysOutOfResponses:
 
     async def test_bulk_unexpected_error(self, session, admin_user, caplog):
         repo = make_repo(make_subject())
-        repo.select_by_field.side_effect = RuntimeError(SECRET_ERROR_TEXT)
+        repo.select_by_uuid_with_links.side_effect = RuntimeError(SECRET_ERROR_TEXT)
 
         with patch.object(subject_routes.pr, "SubjectRepository", return_value=repo):
             result = await subject_routes.bulk_subject_operations(
