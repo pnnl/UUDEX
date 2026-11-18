@@ -35,30 +35,36 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 import functools
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 from urllib import parse
 
+from pyrabbit2 import api as pyrabbit_api
 from pyrabbit2 import http as pyrabbit_http
-from pyrabbit2.api import APIError, Client
+from pyrabbit2.api import Client
 
 #
 from uudex_server.services.message_services.base import BrokerError, UUDEXBrokerService
 
-# PermissionError is what pyrabbit2 raises for an HTTP 401.
+# The errors Client raises from its HTTP calls. pyrabbit2.api defines its own PermissionError,
+# raised for an HTTP 401; it is not the builtin of the same name.
 _LIBRARY_ERRORS = (
     pyrabbit_http.HTTPError,
     pyrabbit_http.NetworkError,
-    APIError,
-    PermissionError,
+    pyrabbit_api.PermissionError,
 )
 
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
-def _raises_broker_error(method):
+
+def _raises_broker_error(method: Callable[_P, _R]) -> Callable[_P, _R]:
     """Re-raise pyrabbit2 failures as BrokerError so callers need not import the library."""
 
     @functools.wraps(method)
-    def wrapper(self, *args, **kwargs):
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         try:
-            return method(self, *args, **kwargs)
+            return method(*args, **kwargs)
         except _LIBRARY_ERRORS as e:
             raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}") from e
 
@@ -159,7 +165,6 @@ class RabbitMqService(UUDEXBrokerService):
     @_raises_broker_error
     def delete_subject(self, subject_name, subject_uuid):
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        print(f"exchange name: {exchange_name}")
         rc = self._client.delete_exchange("/", exchange_name)
         return rc
 
