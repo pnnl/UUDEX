@@ -104,7 +104,7 @@ async def create_subject(
         # Any failure, not only BrokerError, must remove the row: otherwise it is left with no
         # exchange behind it.
         _log.exception("Broker create_subject failed for subject %s", created_subject.subject_uuid)
-        await repo.delete(created_subject.subject_id)
+        await repo.delete(created_subject)
         if isinstance(e, BrokerError):
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -237,7 +237,7 @@ async def delete_subject(
         ) from e
 
     # Delete from database
-    await repo.delete(subject_id)
+    await repo.delete(existing_subject)
 
     return {"message": "Subject deleted successfully", "subject_id": subject_id}
 
@@ -572,7 +572,7 @@ async def bulk_subject_operations(
                     )
                     continue
 
-                await repo.delete(subject.subject_id)
+                await repo.delete(subject)
                 successful.append(subject_uuid)
 
             elif bulk_request.operation == "purge_queues":

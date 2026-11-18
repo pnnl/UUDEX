@@ -16,9 +16,11 @@ from uudex_server.models.message_models import MessagePublishRequest
 from uudex_server.models.subject_models import (
     BulkSubjectOperation,
     QueueManagementRequest,
+    Subject,
     SubjectCreate,
 )
 from uudex_server.routes import subject_routes
+from uudex_server.services.database_service import get_db_session
 from uudex_server.services.message_services.base import BrokerError
 from uudex_server.services.message_services.rabbit_mq import RabbitMqService
 
@@ -68,7 +70,8 @@ def make_repo(subject):
     repo = Mock()
     repo.select_by_field = AsyncMock(return_value=subject)
     repo.create = AsyncMock(return_value=subject)
-    repo.delete = AsyncMock()
+    # Mirrors Repository.delete, which reads the id fields off the object it is given.
+    repo.delete = AsyncMock(side_effect=lambda obj: obj.subject_id)
     return repo
 
 
@@ -91,6 +94,28 @@ def make_subject_create():
 
 def error_records(caplog):
     return [r for r in caplog.records if r.name == ROUTES_LOGGER and r.levelno >= logging.ERROR]
+
+
+class TestRealRepository:
+    @pytest.mark.xfail(
+        strict=True,
+        reason="#17: Repository.delete calls session.exec, which AsyncSession does not have",
+    )
+    async def test_single_delete_removes_the_row(self, setup_test_env, admin_user):
+        async with get_db_session() as session:
+            repo = subject_routes.pr.SubjectRepository(session)
+            created = await repo.create(
+                Subject(
+                    **make_subject_create().model_dump(exclude={"subject_uuid"}),
+                    subject_uuid="real",
+                )
+            )
+
+            await subject_routes.delete_subject(
+                created.subject_id, session, admin_user, make_broker()
+            )
+
+            assert await subject_routes.pr.select_subject_by_id(session, created.subject_id) is None
 
 
 class TestBulkDelete:
@@ -136,7 +161,7 @@ class TestBulkDelete:
         assert result.successful == ["subj-uuid"]
         assert result.failed == []
         assert result.total_processed == 1
-        repo.delete.assert_awaited_once_with(7)
+        repo.delete.assert_awaited_once_with(subject)
         assert error_records(caplog) == []
 
     async def test_non_broker_error_is_logged_and_reported(self, session, admin_user, caplog):
@@ -240,7 +265,7 @@ class TestOtherHandlersLog:
             result = await subject_routes.delete_subject(7, session, admin_user, make_broker())
 
         assert result == {"message": "Subject deleted successfully", "subject_id": 7}
-        repo.delete.assert_awaited_once_with(7)
+        repo.delete.assert_awaited_once_with(subject)
         assert error_records(caplog) == []
 
     async def test_create_logs_and_rolls_back(self, session, admin_user, caplog):
@@ -256,7 +281,7 @@ class TestOtherHandlersLog:
 
         assert exc_info.value.status_code == 500
         assert "exchange create refused" in exc_info.value.detail
-        repo.delete.assert_awaited_once_with(7)
+        repo.delete.assert_awaited_once_with(subject)
         assert len(error_records(caplog)) == 1
 
     async def test_create_rolls_back_and_reraises_non_broker_error(
@@ -275,7 +300,7 @@ class TestOtherHandlersLog:
             await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
 
         assert exc_info.value is bug
-        repo.delete.assert_awaited_once_with(7)
+        repo.delete.assert_awaited_once_with(subject)
         records = error_records(caplog)
         assert len(records) == 1
         assert records[0].exc_info[1] is bug
