@@ -40,6 +40,14 @@ class Repository(Generic[T]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def select_by_field(self, field: str, value: object) -> T | None:
+        """First row whose column `field` equals `value`; an unknown column is an error."""
+        if field not in self.model.model_fields:
+            raise ValueError(f"{self.model.__name__} has no column {field!r}")
+        statement = _select(self.model).where(getattr(self.model, field) == value)
+        result = await self.session.execute(statement)
+        return result.scalars().first()
+
     async def select_by_ids(self, **ids: int) -> T | None:
         statements = [getattr(self.model, field) == ids[field] for field in self.id_fields]
         statement = _select(self.model).where(*statements)
