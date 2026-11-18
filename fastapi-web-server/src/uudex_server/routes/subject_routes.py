@@ -1,4 +1,4 @@
-import contextlib
+import logging
 import uuid
 from datetime import datetime
 
@@ -20,7 +20,9 @@ from uudex_server.models.subject_models import (
 )
 from uudex_server.repos import subscription_and_subject_repositories as pr
 from uudex_server.services.message_services import create_broker_service
-from uudex_server.services.message_services.base import UUDEXBrokerService
+from uudex_server.services.message_services.base import BrokerError, UUDEXBrokerService
+
+_log = logging.getLogger(__name__)
 
 subjects_router = APIRouter(prefix="/subjects")
 subject_router = APIRouter(prefix="/subject")
@@ -99,12 +101,20 @@ async def create_subject(
             subject_name=created_subject.subject_name, subject_uuid=created_subject.subject_uuid
         )
     except Exception as e:
-        # If broker setup fails, remove the subject from database
-        await repo.delete(created_subject.subject_id)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to create message broker infrastructure: {str(e)}",
-        )
+        # Any failure, not only BrokerError, must remove the row: otherwise it is left with no
+        # exchange behind it.
+        _log.exception("Broker create_subject failed for subject %s", created_subject.subject_uuid)
+        try:
+            await repo.delete(created_subject)
+        except Exception:
+            # The caller must still see the original failure, not the rollback's.
+            _log.exception("Rollback of subject %s failed", created_subject.subject_uuid)
+        if isinstance(e, BrokerError):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create message broker infrastructure",
+            ) from e
+        raise
 
     return created_subject
 
@@ -221,12 +231,17 @@ async def delete_subject(
         broker.delete_subject(
             subject_name=existing_subject.subject_name, subject_uuid=existing_subject.subject_uuid
         )
-    except Exception as e:
-        # Log warning but continue with database deletion
-        print(f"Warning: Failed to delete message broker infrastructure: {str(e)}")
+    except BrokerError as e:
+        # Keep the row, as the bulk delete does, so the subject stays visible and the delete can
+        # be retried instead of orphaning the exchange. 500 matches create_subject and publish.
+        _log.exception("Broker delete_subject failed for subject %s", existing_subject.subject_uuid)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to delete message broker infrastructure",
+        ) from e
 
     # Delete from database
-    await repo.delete(subject_id)
+    await repo.delete(existing_subject)
 
     return {"message": "Subject deleted successfully", "subject_id": subject_id}
 
@@ -354,10 +369,11 @@ async def publish_messages_to_subject(
                 message_ids.append(message_id)
                 published_count += 1
 
-    except Exception as e:
+    except BrokerError:
+        _log.exception("Broker publish failed for subject %s", subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to publish messages: {str(e)}",
+            detail="Failed to publish messages",
         )
 
     return MessagePublishResponse(
@@ -448,6 +464,7 @@ async def manage_subject_queues(
             # Purge all queues associated with this subject
             # This requires getting all subscription-subject relationships
             purged_queues = []
+            failed_queues = []
             for sub_link in subject.subscription_links:
                 queue_name = broker.build_queue_name(
                     tag="uudex",
@@ -459,8 +476,20 @@ async def manage_subject_queues(
                     # For now, we'll try to delete and recreate
                     broker.delete_queue(queue_name)
                     purged_queues.append(queue_name)
-                except Exception as e:
-                    print(f"Warning: Failed to purge queue {queue_name}: {str(e)}")
+                except BrokerError:
+                    _log.exception("Broker failed to purge queue %s", queue_name)
+                    failed_queues.append(queue_name)
+
+            if failed_queues:
+                return QueueManagementResponse(
+                    success=False,
+                    message=(
+                        f"Purged {len(purged_queues)} queues; "
+                        f"failed to purge: {', '.join(failed_queues)}"
+                    ),
+                    queue_info={"purged_queues": purged_queues, "failed_queues": failed_queues},
+                    timestamp=datetime.utcnow(),
+                )
 
             return QueueManagementResponse(
                 success=True,
@@ -485,10 +514,12 @@ async def manage_subject_queues(
                 detail=f"Unsupported action: {queue_request.action}",
             )
 
-    except Exception as e:
+    except Exception:
+        # Wraps repository and model code as well as the broker, so it cannot name BrokerError.
+        _log.exception("Queue management action %s failed", queue_request.action)
         return QueueManagementResponse(
             success=False,
-            message=f"Queue management operation failed: {str(e)}",
+            message="Queue management operation failed",
             queue_info=None,
             timestamp=datetime.utcnow(),
         )
@@ -532,17 +563,23 @@ async def bulk_subject_operations(
 
             if bulk_request.operation == "delete":
                 # Delete subject and its infrastructure
-                # Continue with database deletion even if broker fails
-                with contextlib.suppress(Exception):
+                # Keep the database row when the exchange delete fails, so the subject stays
+                # visible and the delete can be retried instead of orphaning the exchange.
+                try:
                     broker.delete_subject(
                         subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
                     )
+                except BrokerError:
+                    _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
+                    failed.append({"subject_uuid": subject_uuid, "error": "Broker delete failed"})
+                    continue
 
-                await repo.delete(subject.subject_id)
+                await repo.delete(subject)
                 successful.append(subject_uuid)
 
             elif bulk_request.operation == "purge_queues":
                 # Purge all queues for the subject
+                failed_queues = []
                 for sub_link in subject.subscription_links:
                     queue_name = broker.build_queue_name(
                         tag="uudex",
@@ -550,10 +587,21 @@ async def bulk_subject_operations(
                         subscription_uuid=sub_link.subscription_uuid,
                     )
                     # Continue with other queues
-                    with contextlib.suppress(Exception):
+                    try:
                         broker.delete_queue(queue_name)
+                    except BrokerError:
+                        _log.exception("Broker failed to purge queue %s", queue_name)
+                        failed_queues.append(queue_name)
 
-                successful.append(subject_uuid)
+                if failed_queues:
+                    failed.append(
+                        {
+                            "subject_uuid": subject_uuid,
+                            "error": f"Failed to purge queues: {', '.join(failed_queues)}",
+                        }
+                    )
+                else:
+                    successful.append(subject_uuid)
 
             else:
                 failed.append(
@@ -563,8 +611,12 @@ async def bulk_subject_operations(
                     }
                 )
 
-        except Exception as e:
-            failed.append({"subject_uuid": subject_uuid, "error": str(e)})
+        except Exception:
+            # Wraps repository calls as well as the broker, so it cannot name BrokerError.
+            _log.exception(
+                "Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid
+            )
+            failed.append({"subject_uuid": subject_uuid, "error": "Operation failed"})
 
     return BulkOperationResult(
         successful=successful,

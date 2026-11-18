@@ -34,12 +34,42 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 """
 
+import functools
+from collections.abc import Callable
+from typing import ParamSpec, TypeVar
 from urllib import parse
 
+from pyrabbit2 import api as pyrabbit_api
+from pyrabbit2 import http as pyrabbit_http
 from pyrabbit2.api import Client
 
 #
-from uudex_server.services.message_services.base import UUDEXBrokerService
+from uudex_server.services.message_services.base import BrokerError, UUDEXBrokerService
+
+# The errors Client raises from its HTTP calls. pyrabbit2.api defines its own PermissionError,
+# raised for an HTTP 401; it is not the builtin of the same name.
+_LIBRARY_ERRORS = (
+    pyrabbit_http.HTTPError,
+    pyrabbit_http.NetworkError,
+    pyrabbit_api.PermissionError,
+)
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+
+def _raises_broker_error(method: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Re-raise pyrabbit2 failures as BrokerError so callers need not import the library."""
+
+    @functools.wraps(method)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        try:
+            return method(*args, **kwargs)
+        except _LIBRARY_ERRORS as e:
+            raise BrokerError(f"RabbitMQ {method.__name__} failed: {e}") from e
+
+    return wrapper
+
 
 #
 # note: this interface  is in-flux as use cases mature
@@ -64,6 +94,7 @@ class RabbitMqService(UUDEXBrokerService):
 
         return hostname, parms.get("username")[0], parms.get("password")[0]
 
+    @_raises_broker_error
     def create_subscription_subject(self, subscription_uuid, subject_uuid, subject_name, tag):
         queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
         self._client.create_queue("/", queue_name, auto_delete=False, durable=True, exclusive=False)
@@ -73,6 +104,7 @@ class RabbitMqService(UUDEXBrokerService):
 
         return queue_name
 
+    @_raises_broker_error
     def create_subscription_subject_with_performance_constraints(
         self,
         subscription_uuid,
@@ -117,26 +149,30 @@ class RabbitMqService(UUDEXBrokerService):
 
         return queue_name
 
+    @_raises_broker_error
     def delete_subscription_subject(self, subscription_uuid, subject_name, tag):
         queue_name = self.build_queue_name(tag, subject_name, subscription_uuid)
         self._client.purge_queue("/", queue_name)
         rc = self._client.delete_queue("/", queue_name)
         return rc
 
+    @_raises_broker_error
     def create_subject(self, subject_name, subject_uuid):
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
         rc = self._client.create_exchange("/", exchange_name, "fanout", False, True, False)
         return rc
 
+    @_raises_broker_error
     def delete_subject(self, subject_name, subject_uuid):
         exchange_name = self.build_exchange_name(subject_name, subject_uuid)
-        print(f"exchange name: {exchange_name}")
         rc = self._client.delete_exchange("/", exchange_name)
         return rc
 
+    @_raises_broker_error
     def delete_queue(self, queue_name):
         return self._client.delete_queue("/", queue_name)
 
+    @_raises_broker_error
     def publish_message(self, subject_exchange, routing_key, payload, payload_enc="string"):
         # payload_enc: string or base64  # noqa: ERA001
         return self._client.publish(
@@ -148,5 +184,6 @@ class RabbitMqService(UUDEXBrokerService):
             properties={"delivery_mode": 2},
         )  # 2 = persistent
 
+    @_raises_broker_error
     def get_messages(self, queue, count=1):
         return self._client.get_messages("/", queue, count)
