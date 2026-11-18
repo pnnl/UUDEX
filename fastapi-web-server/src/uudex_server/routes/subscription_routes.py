@@ -1,3 +1,4 @@
+import logging
 import uuid
 from datetime import datetime
 
@@ -14,7 +15,10 @@ from uudex_server.models.message_models import (
 from uudex_server.models.subscription_models import SubscriptionCreate
 from uudex_server.models.subscription_subject_models import SubscriptionSubject
 from uudex_server.repos import subscription_and_subject_repositories as ssr
+from uudex_server.services.message_services.base import BrokerError
 from uudex_server.services.message_services.message_broker_common import message_broker_factory
+
+_log = logging.getLogger(__name__)
 
 subscriptions_router = APIRouter(prefix="/subscriptions")
 subscription_router = APIRouter(prefix="/subscription")
@@ -146,16 +150,27 @@ async def consume_messages(
         if remaining_messages <= 0:
             break
 
-        # Build queue name using the same pattern as creation
-        queue_name = broker_service.build_queue_name(
-            tag="uudex",  # Default tag used in UUDEX
-            subject_name=sub_subject.subject.subject_name,
-            subscription_uuid=subscription_uuid,
-        )
+        queue_name = sub_subject.backing_queue_name
 
         # Consume messages from this queue
         messages_to_get = min(messages_per_subject, remaining_messages)
-        raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        try:
+            raw_messages = broker_service.get_messages(queue_name, count=messages_to_get)
+        except BrokerError as e:
+            if e.status_code == status.HTTP_404_NOT_FOUND:
+                # A deleted queue stays named on its link; skip only that, not a broker failure.
+                _log.warning("Skipping queue %s: the broker reports it does not exist", queue_name)
+                continue
+            _log.exception("Broker failed to read queue %s", queue_name)
+            if all_messages:
+                # Reads are destructive, so failing now would lose these; the next call surfaces
+                # the failure.
+                break
+            # 502: the broker is an upstream that failed, not a fault in this server.
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Message broker unavailable",
+            ) from e
 
         # Convert raw messages to MessageContent objects
         if raw_messages:

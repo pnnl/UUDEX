@@ -1,7 +1,8 @@
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlmodel import select
+from sqlalchemy.orm import selectinload
+from sqlmodel import func, select
 
 import uudex_server.models as m
 from uudex_server.repos import Repository
@@ -56,10 +57,31 @@ class SubscriptionSubjectRepository(Repository[m.SubscriptionSubject]):
         res = await session.execute(statement)
         return res.scalar_one_or_none()
 
+    async def count_other_subjects_storing_queue(self, queue_name: str, subject_id: int) -> int:
+        """How many links on subjects other than `subject_id` store this queue name."""
+        statement = (
+            select(func.count())
+            .select_from(m.SubscriptionSubject)
+            .where(
+                m.SubscriptionSubject.backing_queue_name == queue_name,
+                m.SubscriptionSubject.subject_id != subject_id,
+            )
+        )
+        return (await self.session.execute(statement)).scalar_one()
+
 
 class SubjectRepository(Repository[m.Subject]):
     def __init__(self, session: AsyncSession):
         super().__init__(m.Subject, session=session, id_field="subject_id")
+
+    async def select_by_uuid_with_links(self, subject_uuid: str) -> m.Subject | None:
+        """The subject with `subscription_links` loaded; a lazy load raises on the async session."""
+        statement = (
+            select(m.Subject)
+            .where(m.Subject.subject_uuid == subject_uuid)
+            .options(selectinload(m.Subject.subscription_links))  # type: ignore[arg-type]
+        )
+        return (await self.session.execute(statement)).scalar_one_or_none()
 
 
 async def warn_untrusted_exchange_names(session: AsyncSession) -> None:
