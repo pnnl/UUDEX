@@ -15,7 +15,7 @@
 #   client-cn        a client whose CN names an active endpoint (default: alice)
 # Run it on the Docker host, from a checkout: the mount sources must be readable here.
 # Needs curl, openssl, docker and git, plus GNU coreutils (timeout, cmp, realpath, mktemp,
-# sort, comm, head, tail, tr, wc, dirname, rm) and sed and /usr/bin/grep; no root, no ca.key.
+# date, sort, comm, head, tail, tr, wc, dirname, rm) and sed and /usr/bin/grep; no root, no ca.key.
 # Exit status: 0 when every check passes, 1 when any fails, 2 on a usage or precondition error.
 set -euo pipefail
 
@@ -91,7 +91,7 @@ service_container() {
 preflight() {
   [ -n "$CERTS" ] && [ -n "$PROJECT" ] || die "usage: check-proxy.sh <certs-dir> <compose-project> [client-cn]"
   local c line endpoint
-  for c in curl openssl docker git timeout cmp realpath mktemp sed sort comm head tail tr wc dirname rm; do
+  for c in curl openssl docker git timeout cmp realpath mktemp date sed sort comm head tail tr wc dirname rm; do
     command -v "$c" >/dev/null 2>&1 || die "$c is required and not on PATH"
   done
   [ -x /usr/bin/grep ] || die "/usr/bin/grep is required"
@@ -399,6 +399,57 @@ check_image_and_launch() {
   case "$got" in null | '{}') pass "proxy has no tmpfs" ;; *) fail "proxy has no tmpfs (found ${got:-unreadable})" ;; esac
 }
 
+# Nanoseconds since the epoch for a timestamp, or failure. GNU date reads both the daemon's
+# StartedAt and stat's %z; the empty string is refused because date takes it as midnight.
+to_ns() {
+  local ns
+  [ -n "$1" ] || return 1
+  ns=$(date -d "$1" +%s%N 2>/dev/null) || return 1
+  case "$ns" in '' | *[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$ns"
+}
+
+started_ns() {
+  local started
+  started=$(dk inspect --format '{{.State.StartedAt}}' "$PROXY") || return 1
+  to_ns "$started"
+}
+
+# Traefik reads its static config and the CA file once, at start, so a file read now cannot
+# show what it loaded. Nothing it mounted may have changed since it started: ctime, which user
+# space cannot set (mtime can be set back), read inside the proxy where the held inode is, in
+# nanoseconds because busybox's whole-second %Z would miss a change in the start's own second.
+# StartedAt, never Created: docker restart moves StartedAt and reloads the files. A restore
+# after start fails too; recreate the proxy.
+check_unchanged_since_start() {
+  local msg="proxy files unchanged since the proxy started" start out name ts ns dst
+  local changed="" bad="" seen="|" missing=""
+  local -a dsts=(/certs/ca.crt /certs/server.crt /certs/server.key /etc/traefik/traefik.yml /etc/traefik/dynamic.yml)
+  start=$(started_ns) || { fail "$msg (cannot read when the proxy started)"; return; }
+  out=$(dk exec "$PROXY" stat -c '%n|%z' "${dsts[@]}") \
+    || { fail "$msg (cannot read the file times inside the proxy)"; return; }
+  while IFS='|' read -r name ts; do
+    [ -n "$name" ] || continue
+    case " ${dsts[*]} " in
+      *" $name "*) seen+="$name|" ;;
+      *) bad+="$name (unexpected file) "; continue ;;
+    esac
+    if ns=$(to_ns "$ts"); then
+      if [ "$ns" -gt "$start" ]; then changed+="$name "; fi
+    else
+      bad+="$name (time '$ts' not readable) "
+    fi
+  done <<<"$out"
+  for dst in "${dsts[@]}"; do
+    case "$seen" in *"|$dst|"*) ;; *) missing+="$dst " ;; esac
+  done
+  if [ -n "$changed" ] || [ -n "$bad" ] || [ -n "$missing" ]; then
+    fail "$msg (changed after start: ${changed:-none}; unreadable: ${bad:-none}; missing: ${missing:-none}; recreate the proxy: up -d --force-recreate proxy)"
+  else
+    pass "$msg"
+  fi
+}
+
 # The proxy's mounts must be exactly: three single certificate files and the two config
 # files, all bind mounts and read-only. A folder, a volume, a tmpfs or a socket is a failure.
 # The config sources are compared by content in check_committed_config; here they stand in
@@ -448,6 +499,7 @@ main() {
   check_app_network_ports
   check_published_ports
   check_mounts
+  check_unchanged_since_start
   check_committed_config
   check_image_and_launch
   [ "$FAILED" -eq 0 ] || { echo "one or more checks failed" >&2; exit 1; }
