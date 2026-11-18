@@ -35,10 +35,21 @@ THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 """
 
 import abc
+import uuid
+from typing import Protocol
 
 
 class BrokerError(Exception):
     """A message broker call failed. Services raise this instead of the client library's errors."""
+
+
+class UntrustedBrokerName(Exception):
+    """A stored broker name is not one the server could have minted for its own row."""
+
+
+class _HasExchange(Protocol):
+    subject_uuid: str
+    backing_exchange_name: str
 
 
 # A broker name is minted once, here, from server-made UUIDs only. It is stored on its row and
@@ -49,6 +60,25 @@ def exchange_name(subject_uuid: str) -> str:
 
 def queue_name(subject_uuid: str, subscription_uuid: str) -> str:
     return f"q_uudex_{subject_uuid}_{subscription_uuid}"
+
+
+def trusted_exchange_name(subject: _HasExchange) -> str:
+    """The stored exchange name, or UntrustedBrokerName when it is not tied to this row alone.
+
+    Rows written before names were server-minted may hold a client-chosen uuid or a name copied
+    from another subject. A canonical uuid is fixed-length and unique, so a name that ends in it
+    cannot be another row's name.
+    """
+    subject_uuid, name = subject.subject_uuid, subject.backing_exchange_name
+    try:
+        canonical = str(uuid.UUID(subject_uuid)) == subject_uuid
+    except (ValueError, TypeError, AttributeError):
+        canonical = False
+    if not canonical:
+        raise UntrustedBrokerName(f"subject_uuid {subject_uuid!r} is not a canonical uuid")
+    if not (isinstance(name, str) and name.startswith("e_") and name.endswith(f"_{subject_uuid}")):
+        raise UntrustedBrokerName(f"exchange {name!r} is not tied to subject {subject_uuid}")
+    return name
 
 
 #

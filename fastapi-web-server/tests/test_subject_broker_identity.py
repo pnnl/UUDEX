@@ -1,11 +1,13 @@
 """Broker names are minted by the server and read back from the row, never rebuilt (#67)."""
 
+import logging
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from sqlmodel import select
 
+import uudex_server.main as main_module
 import uudex_server.models as m
 from conftest import identity_headers
 from test_repository_async import seed_endpoint, seed_participant
@@ -179,3 +181,123 @@ class TestDeleteUsesTheStoredExchange:
         assert response.json()["successful"] == [body["subject_uuid"]]
         assert await subject_rows(body["subject_uuid"]) == []
         broker.delete_exchange.assert_called_once_with(body["backing_exchange_name"])
+
+
+class TestTrustedExchangeName:
+    """Rows written before the server minted names: the stored name is checked at use."""
+
+    async def seed_rows(self, tag: str, *, admin: bool = False) -> dict[str, m.Subject]:
+        participant = await seed_owner(tag, admin=admin)
+        other = await seed_participant()
+        other_uuid = new_uuid()
+        other_subject = await seed_subject(other_uuid, other, name="feeder")
+        shared_uuid, aliased_uuid, legacy_uuid = new_uuid(), new_uuid(), new_uuid()
+        return {
+            "other": other_subject,
+            # Canonical uuid, but the stored name is another subject's exchange.
+            "foreign": await seed_subject(
+                shared_uuid,
+                participant,
+                name="foreign",
+                exchange=other_subject.backing_exchange_name,
+            ),
+            # A uuid that is not canonical, so the name's tail is not tied to this row alone.
+            "aliased": await seed_subject(
+                f"7_{aliased_uuid}",
+                participant,
+                name="feeder",
+                exchange=f"e_feeder_7_{aliased_uuid}",
+            ),
+            "legacy": await seed_subject(legacy_uuid, participant, name="feeder"),
+        }
+
+    @pytest.mark.parametrize("row", ["foreign", "aliased"])
+    async def test_publish_to_a_bad_row_is_409_with_no_broker_call(self, tag, broker, row):
+        rows = await self.seed_rows(tag)
+        async with client_with(broker) as c:
+            response = await c.post(
+                f"/subjects/{rows[row].subject_uuid}/publish",
+                json={"messages": ["a"]},
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == "Subject broker name needs repair"
+        broker.publish_message.assert_not_called()
+
+    @pytest.mark.parametrize("row", ["foreign", "aliased"])
+    async def test_queue_info_of_a_bad_row_is_409_with_no_broker_call(self, tag, broker, row):
+        rows = await self.seed_rows(tag)
+        async with client_with(broker) as c:
+            response = await c.get(
+                f"/subject/{rows[row].subject_uuid}/queue-info",
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 409, response.text
+        assert broker.mock_calls == []
+
+    async def test_a_non_owner_still_gets_403_not_409(self, tag, broker):
+        rows = await self.seed_rows(tag)
+        await seed_endpoint(await seed_participant(), f"other-{tag}")
+        async with client_with(broker) as c:
+            response = await c.post(
+                f"/subjects/{rows['foreign'].subject_uuid}/publish",
+                json={"messages": ["a"]},
+                headers=identity_headers(f"other-{tag}"),
+            )
+        assert response.status_code == 403, response.text
+
+    async def test_delete_of_a_bad_row_removes_it_and_skips_the_broker(self, tag, broker):
+        rows = await self.seed_rows(tag)
+        async with client_with(broker) as c:
+            response = await c.delete(
+                f"/subject/{rows['foreign'].subject_id}", headers=identity_headers(f"own-{tag}")
+            )
+        assert response.status_code == 200, response.text
+        assert await subject_rows(rows["foreign"].subject_uuid) == []
+        assert len(await subject_rows(rows["other"].subject_uuid)) == 1
+        assert broker.mock_calls == []
+
+    async def test_bulk_delete_of_a_bad_row_removes_it_and_skips_the_broker(self, tag, broker):
+        rows = await self.seed_rows(tag, admin=True)
+        async with client_with(broker) as c:
+            response = await c.post(
+                "/subjects/bulk-operations",
+                json={"subject_uuids": [rows["aliased"].subject_uuid], "operation": "delete"},
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 200, response.text
+        assert response.json()["successful"] == [rows["aliased"].subject_uuid]
+        assert await subject_rows(rows["aliased"].subject_uuid) == []
+        assert broker.mock_calls == []
+
+    async def test_an_honest_legacy_row_still_publishes_to_its_own_exchange(self, tag, broker):
+        rows = await self.seed_rows(tag)
+        async with client_with(broker) as c:
+            response = await c.post(
+                f"/subjects/{rows['legacy'].subject_uuid}/publish",
+                json={"messages": ["a"]},
+                headers=identity_headers(f"own-{tag}"),
+            )
+        assert response.status_code == 200, response.text
+        assert [c.kwargs["subject_exchange"] for c in broker.publish_message.call_args_list] == [
+            rows["legacy"].backing_exchange_name
+        ]
+
+    async def test_startup_logs_the_bad_rows_and_not_the_good_ones(self, tag, caplog):
+        rows = await self.seed_rows(tag)
+        with caplog.at_level(logging.WARNING):
+            async with main_module.lifespan(main_module.app):
+                pass
+        warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        text = "\n".join(warnings)
+        assert rows["foreign"].subject_uuid in text
+        assert rows["aliased"].subject_uuid in text
+        assert rows["legacy"].subject_uuid not in text
+        assert rows["other"].subject_uuid not in text
+
+    async def test_a_failing_scan_does_not_stop_startup(self, tag):
+        failing = AsyncMock(side_effect=RuntimeError("scan broke"))
+        with patch.object(main_module, "warn_untrusted_exchange_names", failing):
+            async with main_module.lifespan(main_module.app):
+                pass
+        failing.assert_awaited_once()

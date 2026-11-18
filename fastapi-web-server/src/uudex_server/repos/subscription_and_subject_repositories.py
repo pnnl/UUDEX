@@ -1,8 +1,13 @@
+import logging
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 
 import uudex_server.models as m
 from uudex_server.repos import Repository
+from uudex_server.services.message_services.base import UntrustedBrokerName, trusted_exchange_name
+
+_log = logging.getLogger(__name__)
 
 
 class SubscriptionRepository(Repository[m.Subscription]):
@@ -55,6 +60,23 @@ class SubscriptionSubjectRepository(Repository[m.SubscriptionSubject]):
 class SubjectRepository(Repository[m.Subject]):
     def __init__(self, session: AsyncSession):
         super().__init__(m.Subject, session=session, id_field="subject_id")
+
+
+async def warn_untrusted_exchange_names(session: AsyncSession) -> None:
+    """Log the subjects whose stored exchange name the server refuses to use; change nothing."""
+    untrusted = []
+    for subject in await SubjectRepository(session).select_all():
+        try:
+            trusted_exchange_name(subject)
+        except UntrustedBrokerName:
+            untrusted.append(subject.subject_uuid)
+    if untrusted:
+        _log.warning(
+            "%d subject(s) hold a broker exchange name the server cannot trust; publish and "
+            "queue-info refuse them and delete skips the broker: %s",
+            len(untrusted),
+            ", ".join(untrusted),
+        )
 
 
 async def select_all_subjects(

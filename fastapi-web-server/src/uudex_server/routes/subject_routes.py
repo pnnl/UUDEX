@@ -23,8 +23,10 @@ from uudex_server.repos import subscription_and_subject_repositories as pr
 from uudex_server.services.message_services import create_broker_service
 from uudex_server.services.message_services.base import (
     BrokerError,
+    UntrustedBrokerName,
     UUDEXBrokerService,
     exchange_name,
+    trusted_exchange_name,
 )
 
 _log = logging.getLogger(__name__)
@@ -229,7 +231,7 @@ async def delete_subject(
     # before the exchange is touched.
     # A rollback expires the loaded row, so read what the handlers below need first.
     subject_uuid = existing_subject.subject_uuid
-    exchange = existing_subject.backing_exchange_name
+    exchange = _exchange_to_delete(existing_subject)
     try:
         await repo.delete(existing_subject, commit=False)
     except IntegrityError as e:
@@ -241,7 +243,8 @@ async def delete_subject(
         ) from e
 
     try:
-        broker.delete_exchange(exchange)
+        if exchange is not None:
+            broker.delete_exchange(exchange)
     except BrokerError as e:
         # Roll the row back so the subject stays visible and the delete can be retried instead
         # of orphaning the exchange. 500 matches create_subject and publish.
@@ -359,7 +362,7 @@ async def publish_messages_to_subject(
                 detail="Not authorized to publish to this subject",
             )
 
-    exchange = subject.backing_exchange_name
+    exchange = _trusted_exchange_or_409(subject)
 
     # Publish messages to the subject's exchange
     message_ids = []
@@ -425,7 +428,7 @@ async def get_subject_queue_info(
                 detail="Not authorized to view queue info for this subject",
             )
 
-    return await _get_subject_queue_info(subject, subject.backing_exchange_name)
+    return await _get_subject_queue_info(subject, _trusted_exchange_or_409(subject))
 
 
 @subject_router.post("/{subject_uuid}/queue-management", operation_id="manage_subject_queues")
@@ -460,9 +463,12 @@ async def manage_subject_queues(
                 detail="Not authorized to manage queues for this subject",
             )
 
+    # Outside the try below, which turns every exception into a 200 with success False.
+    info_exchange = _trusted_exchange_or_409(subject) if queue_request.action == "info" else ""
+
     try:
         if queue_request.action == "info":
-            queue_info = await _get_subject_queue_info(subject, subject.backing_exchange_name)
+            queue_info = await _get_subject_queue_info(subject, info_exchange)
             return QueueManagementResponse(
                 success=True,
                 message="Queue information retrieved successfully",
@@ -572,7 +578,7 @@ async def bulk_subject_operations(
                 continue
 
             if bulk_request.operation == "delete":
-                exchange = subject.backing_exchange_name
+                exchange = _exchange_to_delete(subject)
                 # Row first, uncommitted, as in the single delete: a linked subject fails
                 # before the exchange is touched, and a broker failure rolls the row back.
                 try:
@@ -589,7 +595,8 @@ async def bulk_subject_operations(
                     continue
 
                 try:
-                    broker.delete_exchange(exchange)
+                    if exchange is not None:
+                        broker.delete_exchange(exchange)
                 except BrokerError:
                     await session.rollback()
                     _log.exception("Broker delete_exchange failed for subject %s", subject_uuid)
@@ -652,6 +659,39 @@ async def bulk_subject_operations(
 # =====================================================
 # HELPER FUNCTIONS
 # =====================================================
+
+
+def _trusted_exchange_or_409(subject: Subject) -> str:
+    """The subject's stored exchange, or 409 when the row's name cannot be trusted.
+
+    Call only after the caller is authorized, so the answer reveals nothing about a row the
+    caller cannot see.
+    """
+    try:
+        return trusted_exchange_name(subject)
+    except UntrustedBrokerName as e:
+        _log.warning("Subject %s has an untrusted exchange name: %s", subject.subject_uuid, e)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="Subject broker name needs repair"
+        ) from e
+
+
+def _exchange_to_delete(subject: Subject) -> str | None:
+    """The stored exchange to delete, or None when the name is untrusted.
+
+    The named exchange may belong to another subject, so an untrusted row is deleted without
+    touching the broker.
+    """
+    try:
+        return trusted_exchange_name(subject)
+    except UntrustedBrokerName as e:
+        _log.warning(
+            "Subject %s deleted without a broker call: %s; stored exchange %r",
+            subject.subject_uuid,
+            e,
+            subject.backing_exchange_name,
+        )
+        return None
 
 
 async def _get_subject_queue_info(subject: Subject, exchange: str) -> SubjectQueueInfo:
