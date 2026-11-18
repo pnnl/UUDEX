@@ -195,17 +195,33 @@ refuse_tls() {
   fi
 }
 
+# Certificates in a PEM file: prints the count, or fails when the file cannot be read
+# (grep exits 1 for a count of 0, and 2 for an error).
+cert_count() {
+  local n rc=0
+  n=$(/usr/bin/grep -c '^-----BEGIN [A-Z0-9 ]*CERTIFICATE-----' "$1") || rc=$?
+  [ "$rc" -le 1 ] || return 1
+  printf '%s\n' "$n"
+}
+
 # The proxy trusts every certificate in ca.crt, and the server does not check the issuer, so a
-# second CA in the file lets its clients in under any name. This is a property of the stack, so
-# it is a check that fails (exit 1), not a usage error. check_mounts shows the proxy mounts
-# this very file.
+# second CA in the file lets its clients in under any name. Both copies are counted: the one
+# the proxy holds catches a proxy started on two CAs and left alone, and the host one catches
+# a source repointed after start, which the next start would load.
 check_ca_bundle() {
-  local msg="ca.crt holds exactly one certificate" n
-  n=$(/usr/bin/grep -c '^-----BEGIN [A-Z0-9 ]*CERTIFICATE-----' "$CERTS/ca.crt" || true)
-  if [ "$n" -eq 1 ]; then
+  local msg="ca.crt holds exactly one certificate, on the host and inside the proxy" host run bad=""
+  host=$(cert_count "$CA_REAL") || host=unreadable
+  if dk exec "$PROXY" cat /certs/ca.crt >"$TMP/run-ca.crt"; then
+    run=$(cert_count "$TMP/run-ca.crt") || run=unreadable
+  else
+    run=unreadable
+  fi
+  [ "$host" = 1 ] || bad+="host copy $CA_REAL has $host; "
+  [ "$run" = 1 ] || bad+="the proxy's copy has $run; "
+  if [ -z "$bad" ]; then
     pass "$msg"
   else
-    fail "$msg (found $n in $CERTS/ca.crt)"
+    fail "$msg (${bad%; })"
   fi
 }
 
@@ -335,28 +351,35 @@ check_published_ports() {
 }
 
 # Both Traefik files are byte-identical to the ones committed at HEAD, on the host and as the
-# proxy itself reads them. A single-file bind mount pins the file the proxy started with: a
-# host file replaced afterwards (git checkout, an editor's save) is a new file the proxy never
-# sees, so the host copy alone can match HEAD while the proxy runs something else. The copy
-# read inside the container is the one the proxy holds. (docker cp is no substitute: it
-# reads the host path.) Needs check_mounts to have run first, since that sets the sources.
+# proxy itself reads them. A single-file bind mount pins the file the proxy started with, so a
+# host file replaced afterwards is a new file the proxy never sees. The copy read inside the
+# container is the one the proxy holds open; it is what the proxy loaded only together with
+# check_unchanged_since_start. (docker cp reads the host path, so it is no substitute.) Needs
+# check_mounts to have run first, since that sets the sources.
 check_committed_config() {
-  local name src msg
+  local name src msg host_diff run_diff
   for name in traefik.yml dynamic.yml; do
     if [ "$name" = traefik.yml ]; then src=$STATIC_SRC; else src=$DYNAMIC_SRC; fi
     msg="mounted $name is identical to the committed file"
     if [ -z "$src" ]; then
       fail "$msg (no mount found for it)"
     elif [ ! -r "$src" ]; then
-      fail "$msg (mount source $src is not readable on this host)"
-    elif ! cmp -s "$src" "$TMP/head-$name"; then
-      fail "mounted $name differs from the committed file (source $src)"
-    elif ! dk exec "$PROXY" cat "/etc/traefik/$name" >"$TMP/run-$name" 2>/dev/null; then
-      fail "$msg (cannot read /etc/traefik/$name inside the proxy)"
-    elif cmp -s "$TMP/run-$name" "$TMP/head-$name"; then
-      pass "$msg"
+      fail "$msg (host copy $src is not readable on this host)"
+    elif ! dk exec "$PROXY" cat "/etc/traefik/$name" >"$TMP/run-$name"; then
+      fail "$msg (cannot read the proxy's copy, /etc/traefik/$name)"
     else
-      fail "$msg (the host file matches HEAD but the proxy holds other bytes: it was replaced after the proxy started; recreate the proxy)"
+      host_diff=0 run_diff=0
+      cmp -s "$src" "$TMP/head-$name" || host_diff=1
+      cmp -s "$TMP/run-$name" "$TMP/head-$name" || run_diff=1
+      if [ "$host_diff" -eq 0 ] && [ "$run_diff" -eq 0 ]; then
+        pass "$msg"
+      elif [ "$host_diff" -ne 0 ] && [ "$run_diff" -ne 0 ]; then
+        fail "mounted $name differs from the committed file on the host ($src) and in the proxy"
+      elif [ "$host_diff" -ne 0 ]; then
+        fail "mounted $name differs from the committed file on the host ($src); the proxy's copy matches"
+      else
+        fail "mounted $name differs from the committed file in the proxy; the host copy matches, so the proxy started on other bytes or the file was replaced after start; recreate the proxy"
+      fi
     fi
   done
 }
