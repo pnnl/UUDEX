@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
@@ -59,12 +60,17 @@ async def get_user_subscriptions(session: SessionDep, user: UserDep) -> list[Sub
 async def create_subscription(
     subscription: SubscriptionCreate, session: SessionDep, user: UserDep
 ) -> Subscription:
-    # The caller owns what they create; an owner named in the body is not trusted.
+    # The caller owns what they create, and the server picks the uuid: neither the owner nor
+    # the uuid named in the body is trusted.
     endpoint = await session.merge(user.endpoint)
-    fields = subscription.model_dump(exclude={"owner_endpoint_id"})
+    fields = subscription.model_dump(exclude={"owner_endpoint_id", "subscription_uuid"})
     repo = ssr.SubscriptionRepository(session)
     sub: Subscription = await repo.create(
-        Subscription(**fields, owner_endpoint_id=endpoint.endpoint_id)
+        Subscription(
+            **fields,
+            subscription_uuid=str(uuid.uuid4()),
+            owner_endpoint_id=endpoint.endpoint_id,
+        )
     )
     return sub
 

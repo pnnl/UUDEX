@@ -2,6 +2,7 @@ from datetime import datetime
 
 from pydantic import BaseModel as PydanticBaseModel
 from pydantic import Field as PydanticField
+from pydantic import field_validator
 from sqlmodel import Field, Relationship
 
 from uudex_server.models.subscription_subject_models import SubscriptionSubject
@@ -44,6 +45,8 @@ class SubjectCreate(SubjectBase):
     subject_uuid: str | None = None  # Auto-generate if not provided
     owner_participant_id: int | None = None  # Set from user context
     dataset_definition_id: int | None = None  # Set from context or default
+    # Accepted for older clients and ignored: the route builds the name the broker creates.
+    backing_exchange_name: str | None = None  # type: ignore[assignment]
 
 
 class SubjectUpdate(PydanticBaseModel):
@@ -57,7 +60,16 @@ class SubjectUpdate(PydanticBaseModel):
     max_queue_size_kb: int | None = None
     max_message_count: int | None = None
     priority: int | None = None
-    backing_exchange_name: str | None = None
+
+    @field_validator(
+        "subject_name", "dataset_instance_key", "subscription_type", "fulfillment_types_available"
+    )
+    @classmethod
+    def _column_cannot_be_null(cls, value: str | None) -> str | None:
+        # An omitted field is left alone; an explicit null would hit a NOT NULL column.
+        if value is None:
+            raise ValueError("must not be null")
+        return value
 
 
 class SubjectDelete(BaseModel):

@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.exc import IntegrityError
 
 from uudex_server.core import get_settings
 from uudex_server.core.dependencies import SessionDep, UserDep
@@ -82,11 +83,10 @@ async def create_subject(
     if not subject_data.dataset_definition_id:
         subject_data.dataset_definition_id = 1  # Default dataset definition
 
-    # Set backing exchange name if not provided
-    if not subject_data.backing_exchange_name:
-        subject_data.backing_exchange_name = (
-            f"e_{subject_data.subject_name}_{subject_data.subject_uuid}"
-        )
+    # Publish sends to this name, so it is the one the broker creates, never the client's.
+    subject_data.backing_exchange_name = UUDEXBrokerService.build_exchange_name(
+        subject_data.subject_name, subject_data.subject_uuid
+    )
 
     # Create subject in database
     subject_dict = subject_data.model_dump()
@@ -226,22 +226,33 @@ async def delete_subject(
                 detail="Not authorized to delete this subject",
             )
 
+    # The row goes first, uncommitted: a subject still linked to a subscription fails here,
+    # before the exchange is touched.
+    # A rollback expires the loaded row, so read what the handlers below need first.
+    name, subject_uuid = existing_subject.subject_name, existing_subject.subject_uuid
     try:
-        # Delete message broker infrastructure first
-        broker.delete_subject(
-            subject_name=existing_subject.subject_name, subject_uuid=existing_subject.subject_uuid
-        )
+        await repo.delete(existing_subject, commit=False)
+    except IntegrityError as e:
+        await session.rollback()
+        _log.warning("Subject %s not deleted: still linked", subject_uuid)
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Subject is still linked to a subscription",
+        ) from e
+
+    try:
+        broker.delete_subject(subject_name=name, subject_uuid=subject_uuid)
     except BrokerError as e:
-        # Keep the row, as the bulk delete does, so the subject stays visible and the delete can
-        # be retried instead of orphaning the exchange. 500 matches create_subject and publish.
-        _log.exception("Broker delete_subject failed for subject %s", existing_subject.subject_uuid)
+        # Roll the row back so the subject stays visible and the delete can be retried instead
+        # of orphaning the exchange. 500 matches create_subject and publish.
+        await session.rollback()
+        _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete message broker infrastructure",
         ) from e
 
-    # Delete from database
-    await repo.delete(existing_subject)
+    await session.commit()
 
     return {"message": "Subject deleted successfully", "subject_id": subject_id}
 
@@ -562,19 +573,32 @@ async def bulk_subject_operations(
                 continue
 
             if bulk_request.operation == "delete":
-                # Delete subject and its infrastructure
-                # Keep the database row when the exchange delete fails, so the subject stays
-                # visible and the delete can be retried instead of orphaning the exchange.
+                # Row first, uncommitted, as in the single delete: a linked subject fails
+                # before the exchange is touched, and a broker failure rolls the row back.
+                try:
+                    await repo.delete(subject, commit=False)
+                except IntegrityError:
+                    await session.rollback()
+                    _log.warning("Subject %s not deleted: still linked", subject_uuid)
+                    failed.append(
+                        {
+                            "subject_uuid": subject_uuid,
+                            "error": "Subject is still linked to a subscription",
+                        }
+                    )
+                    continue
+
                 try:
                     broker.delete_subject(
                         subject_name=subject.subject_name, subject_uuid=subject.subject_uuid
                     )
                 except BrokerError:
+                    await session.rollback()
                     _log.exception("Broker delete_subject failed for subject %s", subject_uuid)
                     failed.append({"subject_uuid": subject_uuid, "error": "Broker delete failed"})
                     continue
 
-                await repo.delete(subject)
+                await session.commit()
                 successful.append(subject_uuid)
 
             elif bulk_request.operation == "purge_queues":
@@ -616,6 +640,7 @@ async def bulk_subject_operations(
             _log.exception(
                 "Bulk operation %s failed for subject %s", bulk_request.operation, subject_uuid
             )
+            await session.rollback()
             failed.append({"subject_uuid": subject_uuid, "error": "Operation failed"})
 
     return BulkOperationResult(
