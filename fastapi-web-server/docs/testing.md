@@ -2,7 +2,7 @@
 
 Checked against commit edaf169.
 
-Run every command from the `fastapi-web-server` directory. CI (`.github/workflows/ci.yml`) runs two jobs on Python 3.13, `lint` and `test`. This page runs the same commands. Use a virtual environment for the `pip install` lines.
+Run every command from the `fastapi-web-server` directory. CI (`../.github/workflows/ci.yml`, one level up from that directory) runs two jobs on Python 3.13, `lint` and `test`. This page runs the same commands. Use a virtual environment for the `pip install` lines.
 
 ## The test suite
 
