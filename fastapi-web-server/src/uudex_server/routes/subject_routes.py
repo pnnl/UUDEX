@@ -450,6 +450,20 @@ async def manage_subject_queues(
                 detail="Not authorized to manage queues for this subject",
             )
 
+    if queue_request.action == "delete" and queue_request.queue_name:
+        # Raised outside the try below, whose catch-all would turn this into a 200 failure body.
+        # An unowned name gets the unknown-subject answer so it does not confirm the queue exists.
+        owned_queues = {
+            broker.build_queue_name(
+                tag="uudex",
+                subject_name=subject.subject_name,
+                subscription_uuid=sub_link.subscription_uuid,
+            )
+            for sub_link in subject.subscription_links
+        }
+        if queue_request.queue_name not in owned_queues:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subject not found")
+
     try:
         if queue_request.action == "info":
             queue_info = await _get_subject_queue_info(subject, broker)
