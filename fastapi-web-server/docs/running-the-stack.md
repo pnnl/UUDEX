@@ -1,6 +1,6 @@
 # Running the stack with the proxy
 
-Checked against commit edaf169.
+Checked against commit edaf169. The troubleshooting, seed, wiring and remove-everything parts were re-run at a06f91c (only documentation differs between the two).
 
 `compose.yaml` starts the server, PostgreSQL and a Traefik proxy that verifies client certificates. The values in the example files are for local development only. They are not for real deployment.
 
@@ -63,24 +63,51 @@ docker compose --env-file .env.compose up --build -d --wait --wait-timeout 120
 
 "Healthy" is a weak signal. For the proxy it means only that the process answers its ping. For the server it means only that it answers HTTP on `/openapi.json`; it does not show that the database is reachable or usable. A proxy that cannot read its key, or that failed to load `traefik/dynamic.yml`, can still report healthy while it refuses every client. So run the checks in step 8.
 
+### If it will not start
+
+`up --wait` exits non-zero and prints the failing service. Look at the state and the logs, then fix the cause and run the same `up` command again:
+
+```bash
+docker compose --env-file .env.compose ps -a
+docker compose --env-file .env.compose logs <service>
+```
+
+Causes seen while checking these steps:
+
+- `error while interpolating services.proxy.user: required variable UUDEX_PROXY_UID is missing a value: set in .env.compose`. Nothing was created. Fill in `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` (step 5).
+- `invalid mount config for type "bind": bind source path does not exist: <path>/ca.crt`. `UUDEX_CERTS_DIR` names a folder that is missing or has no certificates (steps 4 and 5). The database container is created but not started.
+- All three containers `healthy`, but the first check in step 8 fails with `tlsv1 unrecognized name`, and `logs proxy` shows `open /certs/server.key: permission denied`. `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` are not the owner of `localhost.key`. Fix them, then `docker compose --env-file .env.compose up -d --wait --force-recreate proxy`.
+- A port 8443 already in use on the host makes the proxy fail to start; `logs proxy` and `docker ps` show who holds it. Not reproduced here.
+
 `compose.yaml` names the project `uudex`. To use another project name, add `-p <name>` to every compose command, and pass the same name to the check script. The proxy publishes port 8443 on the host, so only one stack can run at a time.
 
 ## 7. Add the client to the database
 
-Identity comes from the certificate, but the server also needs an endpoint row for it, and no admin route creates one yet. Insert a participant and an endpoint whose `certificate_dn` is the certificate's common name:
+Identity comes from the certificate, but the server also needs an endpoint row for it, and no admin route creates one yet. Insert a participant and an endpoint whose `certificate_dn` is the certificate's common name.
+
+`-v ON_ERROR_STOP=1` makes `psql` stop at the first error and exit 3; without it `psql` prints the error and still exits 0, so a failed seed looks like a success. `-1` runs the file as one transaction, so a failure leaves nothing half written. The tables have no unique constraint on these values, so running plain `insert` statements twice silently stores the rows twice (and a second endpoint for the same client). The `where not exists` guards make this step safe to run again.
 
 ```bash
-docker compose --env-file .env.compose exec -T db psql -U postgres_user -d uudex <<'SQL'
+docker compose --env-file .env.compose exec -T db psql -1 -v ON_ERROR_STOP=1 -U postgres_user -d uudex <<'SQL'
 insert into participant (active_sw, participant_uuid, participant_short_name, participant_long_name, root_org_sw)
-  values ('Y', 'p-0001', 'org', 'Organization', 'Y');
+  select 'Y', 'p-0001', 'org', 'Organization', 'Y'
+  where not exists (select 1 from participant where participant_uuid = 'p-0001');
 insert into endpoint (active_sw, endpoint_uuid, endpoint_user_name, certificate_dn, description,
     uudex_administrator_sw, participant_administrator_sw, participant_id)
   select 'Y', 'e-alice-0001', 'alice', 'alice', 'local development client', 'N', 'N', participant_id
-  from participant where participant_uuid = 'p-0001';
+  from participant
+  where participant_uuid = 'p-0001'
+    and not exists (select 1 from endpoint where certificate_dn = 'alice');
 SQL
 ```
 
-Each insert prints `INSERT 0 1`. Leave out `-T` and the heredoc to get an interactive `psql` instead.
+The first run prints `INSERT 0 1` twice; a second run prints `INSERT 0 0` twice. When a statement fails, the output ends with the error and the command exits 3, for example:
+
+```text
+ERROR:  relation "nosuchtable" does not exist
+```
+
+Leave out `-T` and the heredoc to get an interactive `psql` instead.
 
 ## 8. Check it
 
@@ -93,15 +120,12 @@ curl --cacert $C/ca.crt https://localhost:8443/                  # fails: "tlsv1
 curl --cacert $C/ca.crt --cert $C/localhost.crt --key $C/localhost.key https://localhost:8443/   # fails: "ssl/tls alert bad certificate"
 ```
 
+If the first check does not print `200`:
+
+- `401` with `{"detail":"Unauthorized: Invalid certificate"}`: the proxy accepted the certificate but the database has no endpoint whose `certificate_dn` matches its common name. Do step 7 again for that name.
+- A TLS error such as `unrecognized name`: run `docker compose --env-file .env.compose ps -a` and `docker compose --env-file .env.compose logs proxy`, and see "If it will not start" under step 6. A `healthy` proxy can still be refusing every client.
+
 For the full set of proxy checks, run `tests/compose/check-proxy.sh`: see [testing.md](testing.md).
-
-## Stop
-
-```bash
-docker compose --env-file .env.compose down
-```
-
-This removes the containers and networks and keeps the database volume, so the rows from step 7 are still there the next time you start. To delete the database as well and start clean, add `-v`. Add `--rmi local` to also remove the image compose built.
 
 ## Add the first administrator
 
@@ -178,4 +202,42 @@ The proxy accepts TLS 1.2 and 1.3. TLS 1.2 is limited to ECDHE with AES-GCM or C
 
 Any router you add to `traefik/dynamic.yml` that reaches the server must carry the `client-cert` middleware, because the server does not verify signatures.
 
-The database and the proxy have pinned images, memory limits and healthchecks, and each service waits for the one before it. The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal. The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443. The server trusts the client-certificate header only from the proxy's fixed address, 172.29.77.20 (`TRUSTED_PROXY_HOSTS`). The `app` network hands out dynamic addresses only from 172.29.77.128/25, so Docker gives neither .10 nor .20 to another container on its own. Anyone who controls Docker can still start a container at .20, so keep Docker access limited to people you trust with the server. Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it. If that subnet clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`. `tests/test_compose_proxy.py` checks that these agree. The commented `TRUSTED_PROXY_HOSTS` example in `.env.example` is illustrative and is not read by compose. The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway. RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+The database and the proxy have pinned images, memory limits and healthchecks, and each service waits for the one before it.
+
+### Networks
+
+- The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal.
+- The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443.
+- The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway.
+- RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+
+### Fixed addresses
+
+- The server trusts the client-certificate header only from the proxy's fixed address, 172.29.77.20 (`TRUSTED_PROXY_HOSTS`).
+- The `app` network hands out dynamic addresses only from 172.29.77.128/25, so Docker gives neither .10 nor .20 to another container on its own. Anyone who controls Docker can still start a container at .20, so keep Docker access limited to people you trust with the server.
+- Uvicorn listens only on the server's fixed `app` address (172.29.77.10), so PostgreSQL and any other container on `db` cannot reach it.
+- The commented `TRUSTED_PROXY_HOSTS` example in `.env.example` is illustrative and is not read by compose.
+
+### Changing the subnet
+
+If 172.29.77.0/24 clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`. `tests/test_compose_proxy.py` checks that these agree.
+
+## Stop
+
+```bash
+docker compose --env-file .env.compose down
+```
+
+This removes the containers and networks and keeps the database volume, so the rows from step 7 are still there the next time you start. To delete the database as well and start clean, add `-v`. Add `--rmi local` to also remove the image compose built.
+
+## Remove everything
+
+`down` leaves the certificates, the secret copies and `.env.compose`. This removes everything these steps created, including the CA and client private keys. `<certs-dir>` holds a `.uudex-certs` marker and nothing you want to keep; check the path before you run `rm -r`.
+
+```bash
+docker compose --env-file .env.compose down -v --rmi local
+rm -r <certs-dir>
+rm secrets/compose_postgres_password secrets/compose_postgres_dsn secrets/compose_messagebus_connection secrets/compose_x_ssl_cert .env.compose
+```
+
+`down -v` deletes the database volume and `--rmi local` the image compose built. Pulled base images (`postgres`, `traefik`, `python`) stay in Docker's cache. If you ran "Running the image alone", also run `docker rmi uudex-server`. After this, `docker ps -a`, `docker volume ls`, `docker network ls` and `docker images` show nothing with the project name.
