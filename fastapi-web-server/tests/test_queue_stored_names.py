@@ -198,9 +198,7 @@ class TestPurgeUsesStoredNames:
             response = await manage(c, f"own-{tag}", subject.subject_uuid, action="purge")
         assert response.status_code == 200, response.text
         assert sorted(response.json()["queue_info"]["purged_queues"]) == sorted(stored)
-        assert sorted(call.args[0] for call in broker.delete_queue.call_args_list) == sorted(
-            stored
-        )
+        assert sorted(call.args[0] for call in broker.delete_queue.call_args_list) == sorted(stored)
 
     async def test_bulk_purge_deletes_each_stored_name(self, tag, broker):
         participant, endpoint_id = await seed_owner(f"adm-{tag}", admin=True)
@@ -213,6 +211,4 @@ class TestPurgeUsesStoredNames:
             )
         assert response.status_code == 200, response.text
         assert response.json()["successful"] == [subject.subject_uuid]
-        assert sorted(call.args[0] for call in broker.delete_queue.call_args_list) == sorted(
-            stored
-        )
+        assert sorted(call.args[0] for call in broker.delete_queue.call_args_list) == sorted(stored)
