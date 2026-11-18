@@ -71,7 +71,7 @@ def make_repo(subject):
     repo.select_by_field = AsyncMock(return_value=subject)
     repo.create = AsyncMock(return_value=subject)
     # Mirrors Repository.delete, which reads the id fields off the object it is given.
-    repo.delete = AsyncMock(side_effect=lambda obj: obj.subject_id)
+    repo.delete = AsyncMock(side_effect=lambda obj, **_kwargs: obj.subject_id)
     return repo
 
 
@@ -241,7 +241,9 @@ class TestBulkDelete:
         assert len(result.failed) == 1
         assert result.failed[0]["subject_uuid"] == "subj-uuid"
         assert result.failed[0]["error"] == "Broker delete failed"
-        repo.delete.assert_not_called()
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
         assert "subj-uuid" in records[0].getMessage()
@@ -263,7 +265,8 @@ class TestBulkDelete:
         assert result.successful == ["subj-uuid"]
         assert result.failed == []
         assert result.total_processed == 1
-        repo.delete.assert_awaited_once_with(subject)
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.commit.assert_awaited_once()
         assert error_records(caplog) == []
 
     async def test_non_broker_error_is_logged_and_reported(self, session, admin_user, caplog):
@@ -350,7 +353,9 @@ class TestOtherHandlersLog:
         assert exc_info.value.status_code == 500
         assert exc_info.value.__cause__ is broker_error
         assert exc_info.value.detail == "Failed to delete message broker infrastructure"
-        repo.delete.assert_not_called()
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.rollback.assert_awaited_once()
+        session.commit.assert_not_called()
         records = error_records(caplog)
         assert len(records) == 1
         assert "subj-uuid" in records[0].getMessage()
@@ -369,7 +374,8 @@ class TestOtherHandlersLog:
             result = await subject_routes.delete_subject(7, session, admin_user, make_broker())
 
         assert result == {"message": "Subject deleted successfully", "subject_id": 7}
-        repo.delete.assert_awaited_once_with(subject)
+        repo.delete.assert_awaited_once_with(subject, commit=False)
+        session.commit.assert_awaited_once()
         assert error_records(caplog) == []
 
     async def test_create_logs_and_rolls_back(self, session, admin_user, caplog):

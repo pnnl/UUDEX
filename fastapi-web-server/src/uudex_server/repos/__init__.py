@@ -64,17 +64,20 @@ class Repository(Generic[T]):
         result = await self.session.execute(statement)
         return result.scalars().first()
 
-    async def delete(self, obj: BaseModel) -> None:
+    async def delete(self, obj: BaseModel, *, commit: bool = True) -> None:
+        """Delete the row; with `commit=False` the caller commits or rolls back."""
         statements = [getattr(self.model, field) == getattr(obj, field) for field in self.id_fields]
         statement = _delete(self.model).where(*statements)
         await self.session.execute(statement)
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
 
     async def update(self, obj: T) -> T:
+        changes = obj.model_dump(exclude_unset=True)
+        if not changes:
+            return obj
         statements = [getattr(self.model, field) == getattr(obj, field) for field in self.id_fields]
-        statement = (
-            _update(self.model).where(*statements).values(**obj.model_dump(exclude_unset=True))
-        )
+        statement = _update(self.model).where(*statements).values(**changes)
         await self.session.execute(statement)
         await self.session.commit()
         await self.session.refresh(obj)
