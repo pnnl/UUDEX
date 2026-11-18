@@ -174,16 +174,25 @@ def test_shipped_uvicorn_commands_ignore_proxy_headers(name):
     assert '"--proxy-headers"' not in commands[0]
 
 
-@pytest.mark.parametrize("name", ["README.md", "build_client.sh"])
-def test_documented_uvicorn_start_commands_ignore_proxy_headers(name):
+def _documented_start_files(group):
+    if group == "markdown":
+        return [SERVER_DIR / "README.md", *sorted((SERVER_DIR / "docs").rglob("*.md"))]
+    return [SERVER_DIR / group]
+
+
+@pytest.mark.parametrize("group", ["markdown", "build_client.sh"])
+def test_documented_uvicorn_start_commands_ignore_proxy_headers(group):
     commands = [
-        line
-        for line in (SERVER_DIR / name).read_text().splitlines()
+        (path.name, line)
+        for path in _documented_start_files(group)
+        for line in path.read_text().splitlines()
         if "uvicorn " in line and "--port" in line
     ]
-    assert len(commands) == 1
-    assert " --no-proxy-headers" in commands[0]
-    assert " --proxy-headers" not in commands[0]
+    # An empty list must fail, so moving the command cannot make this pass silently.
+    assert commands, f"no documented uvicorn start command found for {group}"
+    for name, line in commands:
+        assert " --no-proxy-headers" in line, name
+        assert " --proxy-headers" not in line, name
 
 
 def test_trusted_hosts_default_to_none(monkeypatch):
