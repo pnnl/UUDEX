@@ -233,7 +233,8 @@ class TestOtherHandlersLog:
         subject = make_subject()
         repo = make_repo(subject)
         broker = make_broker()
-        broker.delete_subject.side_effect = BrokerError("exchange delete refused")
+        broker_error = BrokerError("exchange delete refused")
+        broker.delete_subject.side_effect = broker_error
 
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
@@ -245,6 +246,7 @@ class TestOtherHandlersLog:
             await subject_routes.delete_subject(7, session, admin_user, broker)
 
         assert exc_info.value.status_code == 500
+        assert exc_info.value.__cause__ is broker_error
         assert "exchange delete refused" in exc_info.value.detail
         repo.delete.assert_not_called()
         records = error_records(caplog)
@@ -272,7 +274,8 @@ class TestOtherHandlersLog:
         subject = make_subject()
         repo = make_repo(subject)
         broker = make_broker()
-        broker.create_subject.side_effect = BrokerError("exchange create refused")
+        broker_error = BrokerError("exchange create refused")
+        broker.create_subject.side_effect = broker_error
         with (
             patch.object(subject_routes.pr, "SubjectRepository", return_value=repo),
             pytest.raises(HTTPException) as exc_info,
@@ -280,6 +283,7 @@ class TestOtherHandlersLog:
             await subject_routes.create_subject(make_subject_create(), session, admin_user, broker)
 
         assert exc_info.value.status_code == 500
+        assert exc_info.value.__cause__ is broker_error
         assert "exchange create refused" in exc_info.value.detail
         repo.delete.assert_awaited_once_with(subject)
         assert len(error_records(caplog)) == 1
