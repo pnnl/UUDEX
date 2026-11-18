@@ -173,8 +173,8 @@ valid_get() {
 
 # True when valid_get output <out> is a 200 whose body names this client's endpoint.
 is_client_200() {
-  [ "$(printf '%s\n' "$1" | tail -n 1)" = 200 ] \
-    && printf '%s' "$1" | /usr/bin/grep -qF "\"certificate_dn\":\"$CLIENT\""
+  [ "$(tail -n 1 <<<"$1")" = 200 ] \
+    && /usr/bin/grep -qF "\"certificate_dn\":\"$CLIENT\"" <<<"$1"
 }
 
 # True when the valid client reaches its own endpoint; the control for every refusal.
@@ -188,7 +188,7 @@ refuse_tls() {
   err=$(curl_t --silent --show-error --max-time "$NET_TIMEOUT" --output /dev/null "$@" 2>&1) || rc=$?
   if [ "$rc" -eq 0 ]; then
     fail "$name (handshake accepted)"
-  elif printf '%s' "$err" | /usr/bin/grep -qE "$TLS_REFUSAL"; then
+  elif /usr/bin/grep -qE "$TLS_REFUSAL" <<<"$err"; then
     pass "$name"
   else
     fail "$name (not a TLS refusal, curl exit $rc)"
@@ -252,10 +252,10 @@ check_tls11() {
   # s_client exits non-zero when the handshake is refused or times out; both cases are
   # judged from its text below, so the status is not needed.
   err=$(s_client "${base[@]}" -tls1_2) || true
-  printf '%s' "$err" | /usr/bin/grep -qE 'Cipher is [A-Z0-9]' \
+  /usr/bin/grep -qE 'Cipher is [A-Z0-9]' <<<"$err" \
     || { fail "$name (control: TLS 1.2 handshake failed)"; return; }
   err=$(s_client "${base[@]}" -tls1_1) || true
-  if printf '%s' "$err" | /usr/bin/grep -q 'alert protocol version'; then
+  if /usr/bin/grep -q 'alert protocol version' <<<"$err"; then
     pass "$name"
   else
     fail "$name (no protocol version alert)"
@@ -269,7 +269,10 @@ check_valid_client() {
   local out forged msg
   msg="valid client gets 200 with its endpoint on /endpoint/me"
   if is_client_200 "$(valid_get "$URL/endpoint/me")"; then pass "$msg"; else fail "$msg"; fi
-  forged=$(der_b64 "$TMP/bob.crt")
+  forged=$(der_b64 "$TMP/bob.crt") || {
+    fail "forged forwarded certificate and subject header still give the valid client (cannot encode the certificate)"
+    return
+  }
   # The forged certificate is sent twice, so a proxy that replaced only one copy of the
   # header would leave a forged value for the server to read.
   out=$(valid_get --header "X-Forwarded-Tls-Client-Cert: $forged" \
@@ -291,7 +294,11 @@ run_throwaway() {
 check_server_direct() {
   local server_ip=$SERVER_IP forged code out rc=0
   control_ok || { fail "direct server access gives 401 (control: valid client did not get 200)"; return; }
-  forged=$(der_b64 "$CERTS/$CLIENT.crt")
+  forged=$(der_b64 "$CERTS/$CLIENT.crt") || {
+    fail "host to the server address with a forged header gives 401 (cannot encode the certificate)"
+    fail "container on the app network with a forged header gets 401 (cannot encode the certificate)"
+    return
+  }
 
   code=$(curl_t --silent --output /dev/null --max-time "$NET_TIMEOUT" --write-out '%{http_code}' \
     --header "X-Forwarded-Tls-Client-Cert: $forged" "http://$server_ip:$SERVER_PORT/endpoint/me") || code=000
@@ -305,7 +312,10 @@ check_server_direct() {
   # limit kills it; in both cases the answer is read from the status line, or its absence.
   out=$(run_throwaway wget -q -T "$NET_TIMEOUT" -S -O /dev/null \
     --header "X-Forwarded-Tls-Client-Cert: $forged" "http://$server_ip:$SERVER_PORT/endpoint/me") || rc=$?
-  code=$(printf '%s\n' "$out" | sed -n 's/^ *HTTP\/[0-9.]* \([0-9]*\).*/\1/p' | head -n 1)
+  # sed quits at the first status line and reads a here-string, so a long answer cannot make
+  # a writer die of SIGPIPE under pipefail.
+  code=$(sed -n '/^ *HTTP\//{s/^ *HTTP\/[0-9.]* \([0-9]*\).*/\1/p;q}' <<<"$out") \
+    || { fail "container on the app network with a forged header gets 401 (cannot read its answer)"; return; }
   if [ "$code" = 401 ]; then
     pass "container on the app network with a forged header gets 401"
   else
@@ -323,12 +333,12 @@ check_app_network_ports() {
   local probe='h=$1; shift; for p in "$@"; do
     if nc -z -w 3 "$h" "$p"; then echo "$p open"; else echo "$p closed"; fi; done'
   out=$(run_throwaway sh -c "$probe" sh "$PROXY_IP" "$PROXY_CONTAINER_PORT" "$TRAEFIK_API_PORT" "$PING_PORT") || rc=$?
-  if ! printf '%s\n' "$out" | /usr/bin/grep -qx "$PROXY_CONTAINER_PORT open"; then
+  if ! /usr/bin/grep -qx "$PROXY_CONTAINER_PORT open" <<<"$out"; then
     fail "proxy API and ping ports are refused on the app network (control: :$PROXY_CONTAINER_PORT not reachable, exit $rc)"
     return
   fi
   for p in "$TRAEFIK_API_PORT" "$PING_PORT"; do
-    if printf '%s\n' "$out" | /usr/bin/grep -qx "$p closed"; then
+    if /usr/bin/grep -qx "$p closed" <<<"$out"; then
       pass "proxy port $p is refused from the app network"
     else
       fail "proxy port $p is refused from the app network (not refused)"
@@ -494,14 +504,14 @@ check_mounts() {
     esac
     actual+="$type|$src|$dst|$rw"$'\n'
   done <<<"$mounts"
-  actual=$(printf '%s' "$actual" | LC_ALL=C sort)
+  actual=$(LC_ALL=C sort <<<"${actual%$'\n'}") || { fail "$msg (cannot sort the mounts)"; return; }
   expected=$(printf '%s\n' \
     "bind|$CA_REAL|/certs/ca.crt|false" \
     "bind|$CRT_REAL|/certs/server.crt|false" \
     "bind|$KEY_REAL|/certs/server.key|false" \
     "bind|CONFIG|/etc/traefik/traefik.yml|false" \
     "bind|CONFIG|/etc/traefik/dynamic.yml|false" \
-    | LC_ALL=C sort)
+    | LC_ALL=C sort) || { fail "$msg (cannot sort the expected mounts)"; return; }
   if [ "$actual" = "$expected" ]; then
     pass "$msg"
   else
