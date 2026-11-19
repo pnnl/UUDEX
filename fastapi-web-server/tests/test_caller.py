@@ -18,8 +18,10 @@ TRUSTED = "127.0.0.1"
 
 
 @asynccontextmanager
-async def trusted_client():
-    transport = ASGITransport(app=app, client=(TRUSTED, 54321))
+async def trusted_client(*, raise_app_exceptions: bool = True):
+    transport = ASGITransport(
+        app=app, client=(TRUSTED, 54321), raise_app_exceptions=raise_app_exceptions
+    )
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
 
@@ -222,7 +224,6 @@ _NO_CALLER = {
     ("GET", "/"): "public root page",
     ("GET", "/docs"): "framework API docs",
     ("GET", "/openapi.json"): "framework API schema",
-    ("GET", "/subscription/{subscription_uuid}"): "known gap, tracked in #48",
 }
 
 

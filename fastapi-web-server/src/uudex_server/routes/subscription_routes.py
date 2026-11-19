@@ -4,7 +4,13 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
-from uudex_server.core.dependencies import SessionDep, UserDep, get_admin_user
+from uudex_server.core.dependencies import (
+    SessionDep,
+    UserDep,
+    VisibleSubscriptionDep,
+    get_admin_user,
+    get_visible_subscription,
+)
 from uudex_server.core.settings import get_settings
 from uudex_server.models import Subscription
 from uudex_server.models.message_models import (
@@ -26,23 +32,13 @@ subscription_router = APIRouter(prefix="/subscription")
 
 @subscription_router.get("/{subscription_uuid}/subjects")
 async def get_subscription_subjects(
-    subscription_uuid: str, session: SessionDep, user: UserDep
+    subscription: VisibleSubscriptionDep, session: SessionDep
 ) -> list[SubscriptionSubject]:
+    """The subject links of a subscription the caller owns or, as an administrator, any."""
     repo = ssr.SubscriptionSubjectRepository(session)
-    subscription_subjects: list[
-        SubscriptionSubject
-    ] = await repo.select_subjects_by_subscription_uuid(
-        session=session, subscription_uuid=subscription_uuid
+    return await repo.select_subjects_by_subscription_uuid(
+        session=session, subscription_uuid=subscription.subscription_uuid
     )
-
-    if not user.is_admin():
-        subscription_subjects = [
-            sub
-            for sub in subscription_subjects
-            if sub.subscription.owner_endpoint_id == user.endpoint.endpoint_id
-        ]
-
-    return subscription_subjects
 
 
 @subscriptions_router.get(
@@ -81,47 +77,25 @@ async def create_subscription(
 
 
 @subscription_router.get("/{subscription_uuid}", operation_id="get_subscription_by_uuid")
-async def get_subscription_by_uuid(subscription_uuid: str, session: SessionDep) -> Subscription:
-    repo = ssr.SubscriptionRepository(session)
-    sub: Subscription | None = await repo.select_subscription_by_uuid(
-        subscription_uuid=subscription_uuid
-    )
-    if not sub:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not Found")
-
-    return sub
+async def get_subscription_by_uuid(subscription: VisibleSubscriptionDep) -> Subscription:
+    return subscription
 
 
-@subscription_router.post("/{subscription_uuid}/consume", operation_id="consume_messages")
+@subscription_router.post(
+    "/{subscription_uuid}/consume",
+    operation_id="consume_messages",
+    dependencies=[Depends(get_visible_subscription)],
+)
 async def consume_messages(
     subscription_uuid: str,
     consume_request: MessageConsumeRequest,
     session: SessionDep,
-    user: UserDep,
 ) -> MessageConsumeResponse:
     """
     Consume messages from a subscription's queue.
 
-    Users can only consume messages from their own subscriptions unless they are admin.
+    Only the owner endpoint or an administrator sees the subscription; anyone else gets 404.
     """
-    # Get the subscription to verify it exists and check ownership
-    repo = ssr.SubscriptionRepository(session)
-    subscription: Subscription | None = await repo.select_subscription_by_uuid(
-        subscription_uuid=subscription_uuid
-    )
-    if not subscription:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
-
-    # Check authorization - users can only consume from their own subscriptions
-    if not user.is_admin():
-        # Access endpoint safely by merging into current session
-        endpoint = await session.merge(user.endpoint)
-        if subscription.owner_endpoint_id != endpoint.endpoint_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Not authorized to consume messages from this subscription",
-            )
-
     # Get subscription subjects to find the queue names
     sub_subject_repo = ssr.SubscriptionSubjectRepository(session)
     subscription_subjects = await sub_subject_repo.select_subjects_by_subscription_uuid(
