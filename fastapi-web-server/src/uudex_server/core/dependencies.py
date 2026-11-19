@@ -3,11 +3,13 @@ FastAPI Dependencies for authentication and authorization
 """
 from typing import Annotated
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.status import HTTP_401_UNAUTHORIZED, HTTP_403_FORBIDDEN
 
+from uudex_server.models import Subscription
 from uudex_server.models.authenticated_user import AuthenticatedUser
+from uudex_server.repos.subscription_and_subject_repositories import SubscriptionRepository
 from uudex_server.services.authentication_service import AuthenticationService
 from uudex_server.services.database_service import get_db
 
@@ -59,9 +61,33 @@ async def get_participant_admin_user(
     return current_user
 
 
+async def get_visible_subscription(
+    subscription_uuid: str,
+    user: Annotated[AuthenticatedUser, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_db)],
+) -> Subscription:
+    """
+    The subscription if the caller owns it or is an administrator.
+
+    Every other case raises the one 404 a missing uuid gets, so a caller cannot tell a
+    subscription they may not see from one that does not exist.
+    """
+    owner_endpoint_id = None
+    if not user.is_admin():
+        # Merge first: the endpoint came from another session's load.
+        owner_endpoint_id = (await session.merge(user.endpoint)).endpoint_id
+    subscription = await SubscriptionRepository(session).select_visible_by_uuid(
+        subscription_uuid, owner_endpoint_id
+    )
+    if subscription is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Subscription not found")
+    return subscription
+
+
 # Type aliases for cleaner endpoint signatures - these are annotated dependencies
 SessionDep = Annotated[AsyncSession, Depends(get_db)]
 UserDep = Annotated[AuthenticatedUser, Depends(get_current_user)]
 CurrentUserDep = Annotated[AuthenticatedUser, Depends(get_current_user)]
 AdminUserDep = Annotated[AuthenticatedUser, Depends(get_admin_user)]
 ParticipantAdminUserDep = Annotated[AuthenticatedUser, Depends(get_participant_admin_user)]
+VisibleSubscriptionDep = Annotated[Subscription, Depends(get_visible_subscription)]

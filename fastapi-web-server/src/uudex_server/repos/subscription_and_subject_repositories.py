@@ -34,6 +34,18 @@ class SubscriptionRepository(Repository[m.Subscription]):
         result = await self.session.execute(statement)
         return result.scalar_one_or_none()
 
+    async def select_visible_by_uuid(
+        self, subscription_uuid: str, owner_endpoint_id: int | None
+    ) -> m.Subscription | None:
+        """The subscription if `owner_endpoint_id` owns it; None means no owner filter (admin)."""
+        statement = select(m.Subscription).where(
+            m.Subscription.subscription_uuid == subscription_uuid
+        )
+        if owner_endpoint_id is not None:
+            statement = statement.where(m.Subscription.owner_endpoint_id == owner_endpoint_id)
+        result = await self.session.execute(statement)
+        return result.scalar_one_or_none()
+
 
 class SubscriptionSubjectRepository(Repository[m.SubscriptionSubject]):
     def __init__(self, session: AsyncSession):
