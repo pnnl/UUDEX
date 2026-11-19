@@ -5,14 +5,14 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+import uudex_server.models as m
 from conftest import identity_headers
 from test_caller import trusted_client
 from test_queue_stored_names import new_uuid, seed_link, seed_owner, seed_subscription
 from test_repository_async import seed_endpoint
 from test_subject_subscription_hardening import seed_subject
-from uudex_server.services.database_service import get_db_session
-import uudex_server.models as m
 from uudex_server.routes import subscription_routes
+from uudex_server.services.database_service import get_db_session
 
 
 @pytest.fixture
