@@ -136,7 +136,7 @@ async def test_select_admin_subscriptions(
 
 @XFAIL_17
 @pytest.mark.asyncio
-async def test_select_subscription_by_uuid(
+async def test_select_visible_by_uuid_without_owner_filter(
     subscription_repo: r.SubscriptionRepository, participant_repo: r.ParticipantRepository
 ):
     created_participant = await setup_participant(participant_repo=participant_repo)
@@ -147,6 +147,6 @@ async def test_select_subscription_by_uuid(
         owner_endpoint_id=created_participant.participant_id,
     )
     await subscription_repo.create(subscription)
-    result = await subscription_repo.select_subscription_by_uuid("uuid1")
+    result = await subscription_repo.select_visible_by_uuid("uuid1", None)
     assert result is not None
     assert result.subscription_uuid == "uuid1"

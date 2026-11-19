@@ -27,13 +27,6 @@ class SubscriptionRepository(Repository[m.Subscription]):
         result = await self.session.execute(statement)
         return list(result.scalars().all())
 
-    async def select_subscription_by_uuid(self, subscription_uuid: str) -> m.Subscription | None:
-        statement = select(m.Subscription).where(
-            m.Subscription.subscription_uuid == subscription_uuid
-        )
-        result = await self.session.execute(statement)
-        return result.scalar_one_or_none()
-
     async def select_visible_by_uuid(
         self, subscription_uuid: str, owner_endpoint_id: int | None
     ) -> m.Subscription | None:

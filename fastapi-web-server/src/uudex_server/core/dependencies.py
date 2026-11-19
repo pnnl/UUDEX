@@ -74,7 +74,8 @@ async def get_visible_subscription(
     """
     owner_endpoint_id = None
     if not user.is_admin():
-        # Merge first: the endpoint came from another session's load.
+        # Read the id from this session's own copy, so the filter does not depend on which
+        # session loaded user.endpoint.
         owner_endpoint_id = (await session.merge(user.endpoint)).endpoint_id
     subscription = await SubscriptionRepository(session).select_visible_by_uuid(
         subscription_uuid, owner_endpoint_id

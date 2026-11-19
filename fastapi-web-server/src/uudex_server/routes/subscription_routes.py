@@ -32,23 +32,13 @@ subscription_router = APIRouter(prefix="/subscription")
 
 @subscription_router.get("/{subscription_uuid}/subjects")
 async def get_subscription_subjects(
-    subscription_uuid: str, session: SessionDep, user: UserDep
+    subscription: VisibleSubscriptionDep, session: SessionDep
 ) -> list[SubscriptionSubject]:
+    """The subject links of a subscription the caller owns or, as an administrator, any."""
     repo = ssr.SubscriptionSubjectRepository(session)
-    subscription_subjects: list[
-        SubscriptionSubject
-    ] = await repo.select_subjects_by_subscription_uuid(
-        session=session, subscription_uuid=subscription_uuid
+    return await repo.select_subjects_by_subscription_uuid(
+        session=session, subscription_uuid=subscription.subscription_uuid
     )
-
-    if not user.is_admin():
-        subscription_subjects = [
-            sub
-            for sub in subscription_subjects
-            if sub.subscription.owner_endpoint_id == user.endpoint.endpoint_id
-        ]
-
-    return subscription_subjects
 
 
 @subscriptions_router.get(
