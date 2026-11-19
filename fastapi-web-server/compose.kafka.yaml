@@ -1,0 +1,64 @@
+# Adds a single-node Kafka (KRaft, no ZooKeeper) to the development stack. Start it with a second file:
+#   docker compose --env-file .env.compose -f compose.yaml -f compose.kafka.yaml up -d --wait
+# The server refuses Kafka until pnnl/UUDEX#62 is fixed; this overlay only provides the broker.
+# Example values are not for real deployment. See docs/running-the-stack.md, "Add a message broker".
+
+services:
+  kafka:
+    image: apache/kafka:4.0.0@sha256:3f7b939115cd4872e9cee9369d80bd69712fde55f9902f46d793f64848dedc75
+    restart: unless-stopped
+    hostname: kafka
+    environment:
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # One node, so every replicated internal topic must have one replica.
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      # Keeps the JVM inside the container limit.
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx256m
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    # No ports: the listener is plaintext, so it stays on the internal "broker" network.
+    networks:
+      - broker
+    mem_limit: 768m
+    memswap_limit: 768m
+    pids_limit: 300
+    init: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/opt/kafka/bin/kafka-broker-api-versions.sh", "--bootstrap-server", "kafka:9092"]
+      interval: 15s
+      timeout: 15s
+      retries: 10
+      start_period: 40s
+
+  server:
+    depends_on:
+      kafka:
+        condition: service_healthy
+    networks:
+      broker:
+
+networks:
+  broker:
+    internal: true
+
+volumes:
+  kafka_data:
+
+secrets:
+  # Replaces the base file's secret: the server reads its broker connection from here.
+  messagebus_connection:
+    file: ./secrets/compose_kafka_connection

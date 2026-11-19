@@ -1,0 +1,64 @@
+# Adds RabbitMQ to the development stack. Start it with a second file:
+#   docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml up -d --wait
+# Example values are not for real deployment. See docs/running-the-stack.md, "Add a message broker".
+
+services:
+  rabbitmq:
+    # The management image: the server talks to the management HTTP API (port 15672), not AMQP.
+    image: rabbitmq:4.1.8-management-alpine@sha256:71dc98bb14d16c7240efc1d9b6356e5ac1470a51c63e8cce16f246e09748a995
+    restart: unless-stopped
+    # RabbitMQ names its node and data directory after the hostname, so fix it.
+    hostname: rabbitmq
+    # The *_FILE environment variables are deprecated and stop the image from starting. The
+    # first user comes from a config fragment that the image reads from conf.d, kept as a secret.
+    secrets:
+      - source: rabbitmq_credentials
+        target: /etc/rabbitmq/conf.d/20-credentials.conf
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    # No ports: the server reaches the broker by name on the internal "broker" network, and the
+    # management UI is not reachable from the host.
+    networks:
+      - broker
+    mem_limit: 512m
+    memswap_limit: 512m
+    pids_limit: 300
+    init: true
+    # The entrypoint chowns the data directory and drops from root to rabbitmq.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    # Healthy only when the management API port the server uses is listening.
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_port_listener", "15672"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  server:
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      broker:
+
+networks:
+  broker:
+    internal: true
+
+volumes:
+  rabbitmq_data:
+
+secrets:
+  rabbitmq_credentials:
+    file: ./secrets/compose_rabbitmq_credentials
+  # Replaces the base file's secret: the server reads its broker connection from here.
+  messagebus_connection:
+    file: ./secrets/compose_rabbitmq_connection

@@ -228,7 +228,7 @@ The database and the proxy have pinned images, memory limits and healthchecks, a
 - The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal.
 - The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443.
 - The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway.
-- RabbitMQ is not part of this stack; the `messagebus_connection` example is only a placeholder.
+- The base stack has no message broker; the `messagebus_connection` example is only a placeholder. Add one with an overlay (next section).
 
 ### Fixed addresses
 
@@ -240,6 +240,32 @@ The database and the proxy have pinned images, memory limits and healthchecks, a
 ### Changing the subnet
 
 If 172.29.77.0/24 clashes with yours, change it in `compose.yaml` everywhere it appears: the subnet and `ip_range`, the server's `ipv4_address`, the `--host` address in its `command`, its healthcheck URL, `TRUSTED_PROXY_HOSTS`, and the proxy's `ipv4_address`. `tests/test_compose_proxy.py` checks that these agree.
+
+## Add a message broker
+
+The base stack has no broker, so subject, queue and consume calls have nothing to reach. Add one by giving compose a second file. Each overlay adds an internal `broker` network that only the server and the broker share, publishes no broker port, pins the image, and sets a memory limit and a healthcheck. Each also replaces the server's `messagebus_connection` secret with its own file.
+
+RabbitMQ (needs about 512 MB more):
+
+```bash
+for n in rabbitmq_credentials rabbitmq_connection; do
+  [ -e secrets/compose_$n ] || cp secrets/example.compose_$n secrets/compose_$n
+done
+chmod 0444 secrets/compose_*
+docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml up --build -d --wait --wait-timeout 240
+```
+
+The user and password in `compose_rabbitmq_credentials` and inside `compose_rabbitmq_connection` must match, as with PostgreSQL; the user is created on the first start only. Creating a subject then makes its exchange on the broker. The management interface is not reachable from the host.
+
+Kafka (single node, KRaft; needs about 768 MB more):
+
+```bash
+[ -e secrets/compose_kafka_connection ] || cp secrets/example.compose_kafka_connection secrets/compose_kafka_connection
+chmod 0444 secrets/compose_*
+docker compose --env-file .env.compose -f compose.yaml -f compose.kafka.yaml up --build -d --wait --wait-timeout 240
+```
+
+The server refuses Kafka until pnnl/UUDEX#62 is fixed, so subject calls fail with a server error; the overlay only provides the broker. Use `-p <name>` and `down -v` with the same two `-f` options to stop an overlay stack and remove its volumes. Start one overlay at a time.
 
 ## Stop
 
@@ -257,6 +283,7 @@ This removes the containers and networks and keeps the database volume, so the r
 docker compose --env-file .env.compose down -v --rmi local
 rm -r "$UUDEX_CERTS"
 rm secrets/compose_postgres_password secrets/compose_postgres_dsn secrets/compose_messagebus_connection secrets/compose_x_ssl_cert .env.compose
+rm -f secrets/compose_rabbitmq_credentials secrets/compose_rabbitmq_connection secrets/compose_kafka_connection
 ```
 
 `down -v` deletes the database volume and `--rmi local` the image compose built. Pulled base images (`postgres`, `traefik`, `python`) stay in Docker's cache. If you ran "Running the image alone", also run `docker rmi uudex-server`. After this, `docker ps -a`, `docker volume ls`, `docker network ls` and `docker images` show nothing with the project name.
