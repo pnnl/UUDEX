@@ -77,7 +77,7 @@ api $BASE/endpoint/999
 -> 403
 ```
 
-Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one subject (your participant's, or any for an administrator; `403` otherwise, `404` when missing), and `/subject/{subject_uuid}/queue-info` reports the state of the subject's message queues on the broker (it also gives `409` when the stored broker name is untrusted: `subject_routes.py:725`, `status_code=status.HTTP_409_CONFLICT, detail="Subject broker name needs repair"`). The stack has no RabbitMQ, so the queue call has nothing to talk to there.
+Likewise `/subject/{subject_id}` and `/subject/uuid/{subject_uuid}` return one subject (your participant's, or any for an administrator; `403` otherwise, `404` when missing), and `/subject/{subject_uuid}/queue-info` reports the state of the subject's message queues on the broker (it also gives `409` when the stored broker name is untrusted: `subject_routes.py:725`, `status_code=status.HTTP_409_CONFLICT, detail="Subject broker name needs repair"`). The base stack has no message broker, so the queue call has nothing to talk to until you add one (see [running-the-stack.md](running-the-stack.md), "Add a message broker"). With the RabbitMQ overlay it still returns `500`, from a database defect tracked in pnnl/UUDEX#79, not from the broker.
 
 ## The API reference
 
@@ -111,4 +111,4 @@ curl -sS --cacert $UUDEX_CERTS/ca.crt --cert $UUDEX_CERTS/bob.crt --key $UUDEX_C
 ## Known limits
 
 * Everything above is read-only. Writes (`POST` for datasets, subjects, subscriptions, participants and endpoints, and the `PUT` and `DELETE` on subjects) exist; see `$BASE/docs` for their bodies. Participants and endpoints can be created only by an administrator, and the very first administrator comes from `uudex-server bootstrap-admin`, not from the API (see [running-the-stack.md](running-the-stack.md)).
-* The subject-by-uuid and queue-info calls returned `500` at edaf169 because the repository called a method the async session does not have (pnnl/UUDEX#67). That fix, pnnl/UUDEX#74, is merged and the repository code now reads rows through `select_by_field`. These two calls were not re-run against a live stack at f5b05cb. The queue-info call also needs a message broker, which the compose stack does not include.
+* The subject-by-uuid and queue-info calls returned `500` at edaf169 because the repository called a method the async session does not have (pnnl/UUDEX#67). That fix, pnnl/UUDEX#74, is merged and the repository code now reads rows through `select_by_field`. These two calls were not re-run against a live stack at f5b05cb. The queue-info call also needs a message broker, which only the overlays in [running-the-stack.md](running-the-stack.md) add; it fails with `500` from pnnl/UUDEX#79 even with one.

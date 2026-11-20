@@ -325,3 +325,67 @@ def test_fixed_addresses_sit_in_the_subnet_and_outside_the_dynamic_range(compose
     for address in (server, proxy_app_address(compose)):
         assert ip_address(address) in subnet
         assert ip_address(address) not in dynamic_range
+
+
+OVERLAYS = {"rabbitmq": "compose.rabbitmq.yaml", "kafka": "compose.kafka.yaml"}
+
+
+@pytest.fixture(params=sorted(OVERLAYS))
+def overlay(request) -> tuple[str, Doc]:
+    return request.param, load(OVERLAYS[request.param])
+
+
+def test_base_file_has_no_broker_and_includes_nothing(compose):
+    assert not set(OVERLAYS) & set(compose["services"])
+    assert "broker" not in compose["networks"]
+    assert "include" not in compose
+
+
+def test_overlay_adds_only_its_broker_and_the_server_block(overlay):
+    broker, doc = overlay
+    assert set(doc["services"]) == {broker, "server"}
+
+
+def test_no_overlay_service_publishes_or_exposes_a_port_or_joins_the_host_network(overlay):
+    _, doc = overlay
+    for name, service in doc["services"].items():
+        for key in ("ports", "expose", "network_mode"):
+            assert key not in service, (name, key)
+
+
+def test_overlay_network_is_only_the_internal_broker_network(overlay):
+    _, doc = overlay
+    assert doc["networks"] == {"broker": {"internal": True}}
+
+
+def test_broker_joins_only_the_broker_network_with_a_digest_pinned_image(overlay):
+    broker, doc = overlay
+    service = doc["services"][broker]
+    assert service["networks"] == ["broker"]
+    assert re.fullmatch(r"[\w./-]+:[\w.-]+@sha256:[0-9a-f]{64}", service["image"]), service["image"]
+
+
+def test_overlay_server_block_only_waits_for_the_broker_and_joins_its_network(overlay):
+    broker, doc = overlay
+    server = doc["services"]["server"]
+    assert set(server) == {"depends_on", "networks"}
+    assert server["depends_on"] == {broker: {"condition": "service_healthy"}}
+    assert set(server["networks"]) == {"broker"}
+
+
+def test_overlay_swaps_the_connection_secret_for_an_existing_example(overlay):
+    broker, doc = overlay
+    assert doc["secrets"]["messagebus_connection"] == {
+        "file": f"./secrets/compose_{broker}_connection"
+    }
+    assert (SERVER_DIR / "secrets" / f"example.compose_{broker}_connection").is_file()
+
+
+def test_rabbitmq_example_user_and_password_agree_between_its_two_secrets():
+    fragment = (SERVER_DIR / "secrets/example.compose_rabbitmq_credentials").read_text()
+    pairs = dict(re.findall(r"^(default_user|default_pass)\s*=\s*(\S+)\s*$", fragment, re.M))
+    connection = (SERVER_DIR / "secrets/example.compose_rabbitmq_connection").read_text().strip()
+    query = dict(re.findall(r"[?&](username|password)=([^&\s]+)", connection))
+    assert set(pairs) == {"default_user", "default_pass"}
+    assert query["username"] == pairs["default_user"]
+    assert query["password"] == pairs["default_pass"]
