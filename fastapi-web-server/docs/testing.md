@@ -70,3 +70,8 @@ What it does not see: a clock set back (by hand, or by NTP further than the time
 A signal (HUP, INT, QUIT, TERM) to the whole process group stops it at once with exit 129, 130, 131 or 143; sent to the script alone it stops after the running call, at most 65 seconds; KILL leaves its temporary folder, which holds no real key.
 
 The script needs `curl`, `openssl`, `docker` and `git`, and GNU coreutils.
+
+## Mypy baseline
+
+The `mypy` CI job runs `./check_mypy_baseline.sh`, which checks `src` and fails unless the error count equals `mypy-baseline.txt` (71 at adoption; the mypy version is the one pinned in `poetry.lock`). Tests are not checked: they add about 224 errors from fixtures and are outside this baseline.
+The job also fails when the count is below the baseline: lower the number in `mypy-baseline.txt` to the count the script prints in the same pull request, and never raise it to make a change pass.
