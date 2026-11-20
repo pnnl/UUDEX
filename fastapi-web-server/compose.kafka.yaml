@@ -33,6 +33,8 @@ services:
     memswap_limit: 768m
     pids_limit: 300
     init: true
+    # No capabilities: the image runs as one user, so tini can signal it without KILL (measured:
+    # a stop ends with exit 143 and a clean shutdown log).
     cap_drop:
       - ALL
     security_opt:

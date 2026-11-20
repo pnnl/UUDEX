@@ -24,7 +24,9 @@ services:
     memswap_limit: 512m
     pids_limit: 300
     init: true
-    # The entrypoint chowns the data directory and drops from root to rabbitmq.
+    # The entrypoint chowns the data directory and drops from root to rabbitmq; on a reused
+    # volume it also needs DAC_OVERRIDE, and tini needs KILL to pass the stop signal on
+    # (without it tini fails with "Operation not permitted" and the broker is killed, not stopped).
     cap_drop:
       - ALL
     cap_add:
@@ -32,6 +34,7 @@ services:
       - SETUID
       - SETGID
       - DAC_OVERRIDE
+      - KILL
     security_opt:
       - no-new-privileges:true
     # Healthy only when the management API port the server uses is listening.
