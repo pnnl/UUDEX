@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
-# Runs mypy on src and fails when the error count exceeds mypy-baseline.txt.
+# Runs mypy on src and fails unless the error count equals mypy-baseline.txt.
 # Run from fastapi-web-server/ with the dev install available to poetry.
 set -euo pipefail
 
 main() {
-  local here baseline_file baseline output rc=0 summary count
+  local here baseline_file baseline output rc=0 summary count checked=unknown
 
   here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
   baseline_file="$here/mypy-baseline.txt"
   [[ -r "$baseline_file" ]] || { echo "error: cannot read $baseline_file" >&2; exit 1; }
   baseline=$(<"$baseline_file")
-  [[ "$baseline" =~ ^[0-9]+$ ]] || { echo "error: $baseline_file must hold one integer" >&2; exit 1; }
+  # No leading zeros: bash reads 08 or 09 as a bad octal and (( )) then errors out.
+  [[ "$baseline" =~ ^(0|[1-9][0-9]*)$ ]] || {
+    echo "error: $baseline_file must hold one integer without leading zeros" >&2
+    exit 1
+  }
 
   # mypy exits 1 when it reports errors, which is the normal case here; the
   # count below decides pass or fail. Any other status is a crash (2) or worse.
@@ -31,13 +35,19 @@ main() {
     exit 1
   fi
 
-  echo "mypy errors: $count (baseline: $baseline)"
-  if (( count > baseline )); then
-    echo "error: $((count - baseline)) new mypy error(s) over the baseline" >&2
+  if [[ "$summary" =~ ([0-9]+)\ source\ files? ]]; then
+    checked=${BASH_REMATCH[1]}
+  fi
+
+  echo "mypy errors: $count (baseline: $baseline, source files checked: $checked)"
+  if (( 10#$count > 10#$baseline )); then
+    echo "error: $((10#$count - 10#$baseline)) new mypy error(s) over the baseline" >&2
     exit 1
   fi
-  if (( count < baseline )); then
-    echo "The count is below the baseline: lower mypy-baseline.txt to $count."
+  # A slack baseline would absorb later new errors, so an improvement must be recorded.
+  if (( 10#$count < 10#$baseline )); then
+    echo "error: the count is below the baseline; lower mypy-baseline.txt to $count in this pull request" >&2
+    exit 1
   fi
 }
 

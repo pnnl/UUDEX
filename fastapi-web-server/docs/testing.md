@@ -73,5 +73,5 @@ The script needs `curl`, `openssl`, `docker` and `git`, and GNU coreutils.
 
 ## Mypy baseline
 
-The `mypy` CI job runs `./check_mypy_baseline.sh`, which checks `src` and fails when the error count is above `mypy-baseline.txt` (71 at adoption, mypy 1.20.2). Tests are not checked: they add about 220 errors from fixtures and are outside this baseline.
-When you fix errors, run the script from this directory and lower the number in `mypy-baseline.txt` to the count it prints; never raise it to make a change pass.
+The `mypy` CI job runs `./check_mypy_baseline.sh`, which checks `src` and fails unless the error count equals `mypy-baseline.txt` (71 at adoption; the mypy version is the one pinned in `poetry.lock`). Tests are not checked: they add about 224 errors from fixtures and are outside this baseline.
+The job also fails when the count is below the baseline: lower the number in `mypy-baseline.txt` to the count the script prints in the same pull request, and never raise it to make a change pass.
