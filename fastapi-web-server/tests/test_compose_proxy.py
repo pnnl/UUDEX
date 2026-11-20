@@ -375,7 +375,9 @@ def test_overlay_server_block_only_waits_for_the_broker_and_joins_its_network(ov
 
 def test_overlay_swaps_the_connection_secret_for_an_existing_example(overlay):
     broker, doc = overlay
-    assert doc["secrets"]["messagebus_connection"] == {"file": f"./secrets/compose_{broker}_connection"}
+    assert doc["secrets"]["messagebus_connection"] == {
+        "file": f"./secrets/compose_{broker}_connection"
+    }
     assert (SERVER_DIR / "secrets" / f"example.compose_{broker}_connection").is_file()
 
 
