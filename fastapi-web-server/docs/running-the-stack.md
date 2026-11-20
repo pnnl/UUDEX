@@ -1,6 +1,6 @@
 # Running the stack with the proxy
 
-Checked against: The code and descriptions were read at commit f5b05cb; the example outputs were last run against a live stack at edaf169.
+Checked against: The code and descriptions were read at commit f5b05cb; the example outputs were last run against a live stack at edaf169. The broker overlays, with their stop and remove commands, were run live on a stack built from 39470bb; subject and queue calls through a broker were not re-run.
 
 `compose.yaml` starts the server, PostgreSQL and a Traefik proxy that verifies client certificates. The values in the example files are for local development only. They are not for real deployment.
 
@@ -92,7 +92,7 @@ Causes seen while checking these steps:
 - All three containers `healthy`, but the first check in step 9 fails with `tlsv1 unrecognized name`, and `logs proxy` shows `open /certs/server.key: permission denied`. `UUDEX_PROXY_UID` and `UUDEX_PROXY_GID` are not the owner of `localhost.key`. Fix them, then `docker compose --env-file .env.compose up -d --wait --force-recreate proxy`.
 - A port 8443 already in use on the host makes the proxy fail to start; `logs proxy` and `docker ps` show who holds it. Not reproduced here.
 
-`compose.yaml` names the project `uudex`. To use another project name, add `-p <name>` to every compose command, and pass the same name to the check script. The proxy publishes port 8443 on the host, so only one stack can run at a time.
+`compose.yaml` names the project `uudex`. To use another project name, add `-p <name>` to every compose command (and to the check script), and use the same name each time. The proxy publishes port 8443 on the host, so only one stack can run at a time.
 
 ## 8. Add the client to the database
 
@@ -228,7 +228,7 @@ The database and the proxy have pinned images, memory limits and healthchecks, a
 - The server publishes no port. It sits on the `app` network (shared with the proxy) and on the `db` network with PostgreSQL; both are internal.
 - The proxy also sits on `edge`, which is not internal, so Docker can publish port 8443.
 - The host can still reach the server's `app` address, but the trusted-peer check refuses it; keep untrusted users off the host anyway.
-- The base stack has no message broker; the `messagebus_connection` example is only a placeholder. Add one with an overlay (next section).
+- The base stack has no message broker; the `messagebus_connection` example is only a placeholder. Add one with an overlay (see [Add a message broker](#add-a-message-broker)).
 
 ### Fixed addresses
 
@@ -257,6 +257,10 @@ docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml 
 
 The user and password in `compose_rabbitmq_credentials` and inside `compose_rabbitmq_connection` must match, as with PostgreSQL; the user is created on the first start only. Creating a subject then makes its exchange on the broker. The management interface is not reachable from the host.
 
+The broker's healthcheck only shows that its management port is listening, not that the server can log in. If the two files disagree, or you changed them after the first start (the `rabbitmq_data` volume keeps the old user), the stack still reports healthy and creating a subject fails with `500`. The server log shows the broker's `401`: `docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml logs server`. To recover, make the two files agree, then run the same `down -v` as in "Stop" (it deletes the broker volume) and start again. This failure was reported in review and was not reproduced here. A healthcheck that logs in would need the password on a command line inside the container, so it is not used.
+
+While the RabbitMQ overlay is up, `GET /subject/{subject_uuid}/queue-info` returns `500`. The cause is a database defect tracked in pnnl/UUDEX#79, not the broker.
+
 Kafka (single node, KRaft; needs about 768 MB more):
 
 ```bash
@@ -265,12 +269,18 @@ chmod 0444 secrets/compose_*
 docker compose --env-file .env.compose -f compose.yaml -f compose.kafka.yaml up --build -d --wait --wait-timeout 240
 ```
 
-The server refuses Kafka until pnnl/UUDEX#62 is fixed, so subject calls fail with a server error; the overlay only provides the broker. Use `-p <name>` and `down -v` with the same two `-f` options to stop an overlay stack and remove its volumes. Start one overlay at a time.
+The server refuses Kafka until pnnl/UUDEX#62 is fixed, so subject calls return a bare `500`; the overlay only provides the broker. The server log shows `Invalid provider [kafka]`: `docker compose --env-file .env.compose -f compose.yaml -f compose.kafka.yaml logs server`. Start one overlay at a time, and stop and remove it with the same two `-f` options (see "Stop").
 
 ## Stop
 
 ```bash
 docker compose --env-file .env.compose down
+```
+
+After an overlay run, give `down` the same `-f` files you started with (and the same `-p`, if you used one), so the broker, its network and its volume are covered too:
+
+```bash
+docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml down
 ```
 
 This removes the containers and networks and keeps the database volume, so the rows from step 8 are still there the next time you start. To delete the database as well and start clean, add `-v`. Add `--rmi local` to also remove the image compose built.
@@ -281,6 +291,8 @@ This removes the containers and networks and keeps the database volume, so the r
 
 ```bash
 docker compose --env-file .env.compose down -v --rmi local
+# After an overlay run, use the same -f files (and the same -p, if you used one):
+# docker compose --env-file .env.compose -f compose.yaml -f compose.rabbitmq.yaml down -v --rmi local
 rm -r "$UUDEX_CERTS"
 rm secrets/compose_postgres_password secrets/compose_postgres_dsn secrets/compose_messagebus_connection secrets/compose_x_ssl_cert .env.compose
 rm -f secrets/compose_rabbitmq_credentials secrets/compose_rabbitmq_connection secrets/compose_kafka_connection
